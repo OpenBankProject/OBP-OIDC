@@ -5,6 +5,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    security-updates-only: true
 
   - package-ecosystem: "maven"
     directory: "/"
@@ -12,4 +13,3 @@ updates:
       interval: "daily"
     commit-message:
       prefix: "chore"
-    security-updates-only: true
