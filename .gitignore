@@ -153,3 +153,7 @@ logs/
 run-server.sh
 
 # Don't upload generated files
+.cursor
+.cursorindexingignore
+.specstory
+*.code-workspace

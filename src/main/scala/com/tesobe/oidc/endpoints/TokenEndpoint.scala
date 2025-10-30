@@ -117,42 +117,76 @@ class TokenEndpoint(
     val grantType = formData.get("grant_type")
     val code = formData.get("code")
     val redirectUri = formData.get("redirect_uri")
-    val clientId = formData.get("client_id")
+    // Support both Basic Auth header and form parameters for client authentication
+    val basicCredentialsOpt = extractBasicAuthCredentials(req)
+    val clientIdFromBasic = basicCredentialsOpt.map(_._1)
+    val clientSecretFromBasic = basicCredentialsOpt.map(_._2)
+    val clientIdFromForm = formData.get("client_id")
+    val clientSecretFromForm = formData.get("client_secret")
+    // Prefer Basic credentials if present; fall back to form client_id
+    val resolvedClientId = clientIdFromBasic.orElse(clientIdFromForm)
     val refreshToken = formData.get("refresh_token")
 
     println(s"🎫 DEBUG: Grant type extracted: ${grantType}")
     logger.info(s"🔑 Grant type: ${grantType.getOrElse("MISSING")}")
     logger.info(s"🎟️ Code: ${code.map(_ => "PROVIDED").getOrElse("MISSING")}")
     logger.info(s"📍 Redirect URI: ${redirectUri.getOrElse("MISSING")}")
-    logger.info(s"🆔 Client ID: ${clientId.getOrElse("MISSING")}")
+    logger.info(s"🆔 Client ID: ${resolvedClientId.getOrElse("MISSING")}")
 
     println(s"🎫 DEBUG: About to match on parameters")
     grantType match {
       case Some("authorization_code") =>
-        (code, redirectUri, clientId) match {
+        // Build optional credentials tuple for validation when provided
+        val credentialsOpt: Option[(String, String)] = basicCredentialsOpt.orElse {
+          (clientIdFromForm, clientSecretFromForm) match {
+            case (Some(id), Some(secret)) => Some((id, secret))
+            case _                        => None
+          }
+        }
+
+        (code, redirectUri, resolvedClientId) match {
           case (Some(authCode), Some(redirectUriValue), Some(clientIdValue)) =>
             println(s"🎫 DEBUG: Matched authorization_code case")
             logger.info(
               s"✅ Processing authorization_code grant for client: $clientIdValue"
             )
-            logger.trace(
-              s"About to call processAuthorizationCodeGrant"
-            )
-            val result = processAuthorizationCodeGrant(
-              authCode,
-              redirectUriValue,
-              clientIdValue
-            )
-            logger.trace(
-              s"processAuthorizationCodeGrant call completed"
-            )
-            result
+            // If credentials are provided (Basic or form), validate client secret
+            credentialsOpt match {
+              case Some((id, secret)) =>
+                if (id != clientIdValue) {
+                  logger.warn("❌ Client ID in credentials does not match resolved client_id")
+                  BadRequest(
+                    OidcError("invalid_client", Some("Client ID mismatch")).asJson
+                  )
+                } else {
+                  authService.authenticateClient(id, secret).flatMap {
+                    case Right(_) =>
+                      logger.trace(s"About to call processAuthorizationCodeGrant (basic auth validated)")
+                      processAuthorizationCodeGrant(
+                        authCode,
+                        redirectUriValue,
+                        clientIdValue
+                      )
+                    case Left(error) =>
+                      logger.warn(s"❌ Client authentication failed for authorization_code: ${error.error}")
+                      BadRequest(error.asJson)
+                  }
+                }
+              case None =>
+                // Public client (no secret) or legacy behavior
+                logger.trace(s"About to call processAuthorizationCodeGrant (no client secret provided)")
+                processAuthorizationCodeGrant(
+                  authCode,
+                  redirectUriValue,
+                  clientIdValue
+                )
+            }
           case _ =>
             println(
               s"🎫 DEBUG: Missing required parameters for authorization_code"
             )
             logger.warn(
-              s"❌ Missing required parameters for authorization_code - code: ${code.isDefined}, redirect_uri: ${redirectUri.isDefined}, client_id: ${clientId.isDefined}"
+              s"❌ Missing required parameters for authorization_code - code: ${code.isDefined}, redirect_uri: ${redirectUri.isDefined}, client_id: ${resolvedClientId.isDefined}"
             )
             BadRequest(
               OidcError(
@@ -162,7 +196,7 @@ class TokenEndpoint(
             )
         }
       case Some("refresh_token") =>
-        (refreshToken, clientId) match {
+        (refreshToken, resolvedClientId) match {
           case (Some(refreshTokenValue), Some(clientIdValue)) =>
             println(s"🎫 DEBUG: Matched refresh_token case")
             logger.info(
@@ -172,7 +206,7 @@ class TokenEndpoint(
           case _ =>
             println(s"🎫 DEBUG: Missing required parameters for refresh_token")
             logger.warn(
-              s"❌ Missing required parameters for refresh_token - refresh_token: ${refreshToken.isDefined}, client_id: ${clientId.isDefined}"
+              s"❌ Missing required parameters for refresh_token - refresh_token: ${refreshToken.isDefined}, client_id: ${resolvedClientId.isDefined}"
             )
             BadRequest(
               OidcError(

@@ -250,7 +250,6 @@ object OidcServer extends IOApp {
                        |<li><strong>Authorization Code Lifetime:</strong> ${config.codeExpirationSeconds} seconds (${config.codeExpirationSeconds / 60} minutes)</li>
                        |<li><strong>Refresh Token Lifetime:</strong> ${config.tokenExpirationSeconds * 720} seconds (~${config.tokenExpirationSeconds * 720 / 86400} days)</li>
                        |</ul>
-                       |$appsSection
                        |<h2>OIDC Endpoints:</h2>
                        |<ul>
                        |<li><a href="/obp-oidc/.well-known/openid-configuration">Discovery Configuration</a> - OpenID Connect metadata</li>
@@ -271,6 +270,7 @@ object OidcServer extends IOApp {
                        |<li><code>refresh_token</code> - Refresh access tokens without re-authentication</li>
                        |</ul>
                        |</body>
+                       |$appsSection
                        |</html>""".stripMargin)
                       .map(
                         _.withContentType(

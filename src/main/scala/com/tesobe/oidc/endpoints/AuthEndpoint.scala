@@ -20,12 +20,9 @@
 package com.tesobe.oidc.endpoints
 
 import cats.effect.IO
-import cats.syntax.all._
 import com.tesobe.oidc.auth.{AuthService, CodeService}
-import com.tesobe.oidc.models.{AuthorizationRequest, LoginForm, OidcError}
-import io.circe.syntax._
+import com.tesobe.oidc.models.{OidcError}
 import org.http4s._
-import org.http4s.circe._
 import org.http4s.dsl.io._
 import org.http4s.headers.Location
 import org.slf4j.LoggerFactory
@@ -44,6 +41,11 @@ class AuthEndpoint(
   println("🚀 AuthEndpoint created - logging is working!")
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
+    // Standalone testing page that does not require query parameters
+    // Allows manual login verification without any external client/Portal
+    case GET -> Root / "obp-oidc" / "test-login" =>
+      showStandaloneLoginForm()
+
     case GET -> Root / "obp-oidc" / "auth" :?
         ResponseTypeQueryParamMatcher(responseType) +&
         ClientIdQueryParamMatcher(clientId) +&
@@ -292,6 +294,108 @@ class AuthEndpoint(
       </body>
       </html>
     """
+
+      response <- Ok(html).map(
+        _.withContentType(
+          org.http4s.headers.`Content-Type`(MediaType.text.html)
+        )
+      )
+    } yield response
+  }
+
+  /**
+    * Renders a standalone testing page that allows users to input all
+    * parameters and submit directly to /obp-oidc/auth.
+    * This is useful to verify the login flow without any external Portal.
+    */
+  private def showStandaloneLoginForm(): IO[Response[IO]] = {
+    for {
+      providers <- authService.getAvailableProviders()
+
+      providerOptions = providers
+        .map { provider =>
+          s"""<option value=\"$provider\">$provider</option>"""
+        }
+        .mkString("\n            ")
+
+      html = s"""
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>OBP-OIDC Test Login</title>
+        <style>
+          body { font-family: Arial, sans-serif; max-width: 520px; margin: 40px auto; padding: 20px; }
+          .form-group { margin-bottom: 14px; }
+          label { display: block; margin-bottom: 6px; font-weight: bold; }
+          input[type=\"text\"], input[type=\"password\"] {
+            width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;
+          }
+          select { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+          .row { display: grid; grid-template-columns: 1fr; gap: 10px; }
+          button { background: #0a66ff; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; width: 100%; }
+          button:hover { background: #084ec2; }
+          .hint { color: #666; font-size: 12px; margin-top: -6px; margin-bottom: 10px; }
+          .box { background: #f7f7f7; border: 1px solid #eee; border-radius: 6px; padding: 12px; margin-bottom: 16px; }
+          code { background: #eee; padding: 2px 4px; border-radius: 4px; }
+        </style>
+      </head>
+      <body>
+        <h2>OBP-OIDC Test Login</h2>
+        <div class=\"box\">
+          <div class=\"hint\">This form submits to <code>/obp-oidc/auth</code> and simulates an OAuth2 Authorization Code request.</div>
+        </div>
+
+        <form method=\"post\" action=\"/obp-oidc/auth\"> 
+          <div class=\"form-group\">
+            <label for=\"client_id\">Client ID</label>
+            <input type=\"text\" id=\"client_id\" name=\"client_id\" placeholder=\"Required\" required>
+          </div>
+
+          <div class=\"form-group\">
+            <label for=\"redirect_uri\">Redirect URI</label>
+            <input type=\"text\" id=\"redirect_uri\" name=\"redirect_uri\" placeholder=\"https://oauth.pstmn.io/v1/callback\" required>
+            <div class=\"hint\">Must be registered for the client. Postman callback is supported.</div>
+          </div>
+
+          <div class=\"form-group\">
+            <label for=\"scope\">Scope</label>
+            <input type=\"text\" id=\"scope\" name=\"scope\" value=\"openid email profile\" required>
+          </div>
+
+          <div class=\"row\">
+            <div class=\"form-group\">
+              <label for=\"state\">State (optional)</label>
+              <input type=\"text\" id=\"state\" name=\"state\" placeholder=\"optional\"> 
+            </div>
+            <div class=\"form-group\">
+              <label for=\"nonce\">Nonce (optional)</label>
+              <input type=\"text\" id=\"nonce\" name=\"nonce\" placeholder=\"optional\"> 
+            </div>
+          </div>
+
+          <div class=\"form-group\">
+            <label for=\"username\">Username</label>
+            <input type=\"text\" id=\"username\" name=\"username\" required>
+          </div>
+
+          <div class=\"form-group\">
+            <label for=\"password\">Password</label>
+            <input type=\"password\" id=\"password\" name=\"password\" required>
+          </div>
+
+          <div class=\"form-group\">
+            <label for=\"provider\">Authentication Provider</label>
+            <select id=\"provider\" name=\"provider\" required>
+              $providerOptions
+            </select>
+          </div>
+
+          <button type=\"submit\">Sign In</button>
+        </form>
+
+      </body>
+      </html>
+      """
 
       response <- Ok(html).map(
         _.withContentType(
