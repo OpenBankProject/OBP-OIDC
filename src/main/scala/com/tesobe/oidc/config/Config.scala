@@ -49,7 +49,8 @@ case class OidcConfig(
       "https://static.openbankproject.com/images/OBP/OBP_Horizontal_2025.png"
     ),
     logoAltText: String = "Open Bank Project",
-    forgotPasswordUrl: Option[String] = None
+    forgotPasswordUrl: Option[String] = None,
+    enableDynamicClientRegistration: Boolean = false
 )
 
 object Config {
@@ -118,7 +119,9 @@ object Config {
           )
         ),
       logoAltText = sys.env.getOrElse("LOGO_ALT_TEXT", "Open Bank Project"),
-      forgotPasswordUrl = sys.env.get("FORGOT_PASSWORD_URL")
+      forgotPasswordUrl = sys.env.get("FORGOT_PASSWORD_URL"),
+      enableDynamicClientRegistration =
+        sys.env.getOrElse("ENABLE_DYNAMIC_CLIENT_REGISTRATION", "false").toBoolean
     )
   }
 }

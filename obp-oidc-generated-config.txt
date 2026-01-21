@@ -1,0 +1,53 @@
+# OBP-OIDC Generated Configuration
+# Generated at: 2025-08-29T13:47:28.569688Z
+# Copy the sections you need to your project configuration files
+
+# ============================================================================
+# 1. OBP-API Configuration (Props file)
+# ============================================================================
+# Add to your OBP-API props file
+openid_connect.scope=openid email profile
+
+# OBP-API OIDC Provider Settings
+openid_connect.endpoint=http://localhost:9000/obp-oidc/.well-known/openid_configuration
+oauth2.client_id=obp-api-client
+oauth2.client_secret=iQZPiGjZ4ZgKP63sYJGl17lkIpWvihX4f5_iKrVXYfI
+oauth2.callback_url=http://localhost:8080/auth/openid-connect/callback
+
+# ============================================================================
+# 2. OBP-Portal Configuration (.env file)
+# ============================================================================
+# Add to your OBP-Portal .env file
+OBP_OAUTH_CLIENT_ID=obp-portal-client
+OBP_OAUTH_CLIENT_SECRET=2sev_vjY94fHeCstao2PcOh0K5tFFPs7kEOFQhmoME4
+OBP_OAUTH_WELL_KNOWN_URL=http://localhost:9000/obp-oidc/.well-known/openid-configuration
+APP_CALLBACK_URL=http://localhost:5174/login/obp/callback
+VITE_API_URL=http://localhost:8080
+VITE_OIDC_ISSUER=http://localhost:9000/obp-oidc
+VITE_CLIENT_ID=obp-portal-client
+
+# ============================================================================
+# 3. API-Explorer-II Configuration (environment variables)
+# ============================================================================
+# Add to your API-Explorer-II environment
+export REACT_APP_OAUTH_CLIENT_ID=obp-explorer-ii-client
+export REACT_APP_OAUTH_CLIENT_SECRET=EHtey9xcSBaU0SGUzkSS8orjXuM3a7FqD987FzTHxio
+export REACT_APP_OAUTH_AUTHORIZATION_URL=http://localhost:9000/obp-oidc/auth
+export REACT_APP_OAUTH_TOKEN_URL=http://localhost:9000/obp-oidc/token
+export REACT_APP_OAUTH_REDIRECT_URI=http://localhost:3001/callback
+
+# ============================================================================
+# 4. Opey-II Configuration (environment variables)
+# ============================================================================
+# Add to your Opey-II environment
+export VUE_APP_OAUTH_CLIENT_ID=obp-opey-ii-client
+export VUE_APP_OAUTH_CLIENT_SECRET=5rZntd0jUp_-3j--BHSGfj6HmzyILiYuZaaM7UGfUEU
+export VUE_APP_OAUTH_AUTHORIZATION_URL=http://localhost:9000/obp-oidc/auth
+export VUE_APP_OAUTH_TOKEN_URL=http://localhost:9000/obp-oidc/token
+export VUE_APP_OAUTH_REDIRECT_URI=http://localhost:3002/callback
+
+# ============================================================================
+# Database Client Information
+# ============================================================================
+# Client IDs and secrets are also stored in your v_oidc_admin_clients table
+# Use these for reference or manual configuration

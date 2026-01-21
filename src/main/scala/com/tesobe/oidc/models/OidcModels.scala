@@ -30,6 +30,7 @@ case class OidcConfiguration(
     userinfo_endpoint: String,
     jwks_uri: String,
     revocation_endpoint: String,
+    registration_endpoint: Option[String] = None, // RFC 7591 Dynamic Client Registration
     response_types_supported: List[String],
     subject_types_supported: List[String],
     id_token_signing_alg_values_supported: List[String],
@@ -272,4 +273,82 @@ case class RevocationRequest(
 object RevocationRequest {
   implicit val encoder: Encoder[RevocationRequest] = deriveEncoder
   implicit val decoder: Decoder[RevocationRequest] = deriveDecoder
+}
+
+// Dynamic Client Registration (RFC 7591)
+// Request for registering a new OAuth 2.0 client
+case class ClientRegistrationRequest(
+    client_name: String,
+    redirect_uris: List[String],
+    grant_types: Option[List[String]] = None,
+    response_types: Option[List[String]] = None,
+    scope: Option[String] = None,
+    token_endpoint_auth_method: Option[String] = None,
+    logo_uri: Option[String] = None,
+    client_uri: Option[String] = None,
+    contacts: Option[List[String]] = None
+)
+
+object ClientRegistrationRequest {
+  implicit val encoder: Encoder[ClientRegistrationRequest] = deriveEncoder
+  implicit val decoder: Decoder[ClientRegistrationRequest] = deriveDecoder
+
+  // Supported values per RFC 7591 / OAuth 2.1
+  val SUPPORTED_GRANT_TYPES: Set[String] = Set(
+    "authorization_code",
+    "refresh_token",
+    "client_credentials"
+  )
+
+  val SUPPORTED_RESPONSE_TYPES: Set[String] = Set("code")
+
+  val SUPPORTED_AUTH_METHODS: Set[String] = Set(
+    "client_secret_post",
+    "client_secret_basic",
+    "none"
+  )
+
+  val DEFAULT_GRANT_TYPES: List[String] = List("authorization_code")
+  val DEFAULT_RESPONSE_TYPES: List[String] = List("code")
+  val DEFAULT_AUTH_METHOD: String = "client_secret_post"
+  val DEFAULT_SCOPES: List[String] = List("openid", "profile", "email")
+}
+
+// Response after successfully registering a client (RFC 7591)
+case class ClientRegistrationResponse(
+    client_id: String,
+    client_secret: Option[String],
+    client_id_issued_at: Long,
+    client_secret_expires_at: Long, // 0 means never expires
+    client_name: String,
+    redirect_uris: List[String],
+    grant_types: List[String],
+    response_types: List[String],
+    scope: String,
+    token_endpoint_auth_method: String,
+    logo_uri: Option[String] = None,
+    client_uri: Option[String] = None,
+    contacts: Option[List[String]] = None
+)
+
+object ClientRegistrationResponse {
+  implicit val encoder: Encoder[ClientRegistrationResponse] = deriveEncoder
+  implicit val decoder: Decoder[ClientRegistrationResponse] = deriveDecoder
+}
+
+// Error response for client registration (RFC 7591)
+case class ClientRegistrationError(
+    error: String,
+    error_description: Option[String] = None
+)
+
+object ClientRegistrationError {
+  implicit val encoder: Encoder[ClientRegistrationError] = deriveEncoder
+  implicit val decoder: Decoder[ClientRegistrationError] = deriveDecoder
+
+  // Standard error codes per RFC 7591
+  val INVALID_REDIRECT_URI = "invalid_redirect_uri"
+  val INVALID_CLIENT_METADATA = "invalid_client_metadata"
+  val INVALID_SOFTWARE_STATEMENT = "invalid_software_statement"
+  val UNAPPROVED_SOFTWARE_STATEMENT = "unapproved_software_statement"
 }

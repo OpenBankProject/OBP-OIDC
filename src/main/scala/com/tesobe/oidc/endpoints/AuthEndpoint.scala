@@ -622,8 +622,9 @@ class AuthEndpoint(
       code: String,
       state: Option[String]
   ): IO[Response[IO]] = {
-    val stateParam = state.map(s => s"&state=$s").getOrElse("")
+    val stateParam = state.map(s => s"&state=${java.net.URLEncoder.encode(s, "UTF-8")}").getOrElse("") // Code URL-encoding
     val location = s"$redirectUri?code=$code$stateParam"
+    IO(println(s"🔄 Redirecting with code to: $location")) *>
     SeeOther(Location(Uri.unsafeFromString(location)))
   }
 
