@@ -122,7 +122,7 @@ class JwtServiceImpl(config: OidcConfig, keyPairRef: Ref[IO, KeyPair])
         .withKeyId(config.keyId)
         .withClaim("azp", clientId)
         .withClaim("name", user.name.orNull)
-        .withClaim("email", user.email.orNull)
+        .withClaim("email", user.email.getOrElse(s"${user.sub}@noemail.local"))
         .withClaim(
           "provider",
           user.provider.getOrElse(config.issuer)
