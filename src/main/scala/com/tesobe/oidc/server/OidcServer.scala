@@ -32,6 +32,7 @@ import com.tesobe.oidc.config.{Config, OidcConfig, VerifyCredentialsMethod, Veri
 import com.tesobe.oidc.endpoints._
 import com.tesobe.oidc.tokens.JwtService
 import com.tesobe.oidc.stats.StatsService
+import com.tesobe.oidc.status.StatusService
 import com.tesobe.oidc.ratelimit.{RateLimitConfig, InMemoryRateLimitService}
 import com.tesobe.oidc.revocation.InMemoryTokenRevocationService
 import org.http4s._
@@ -169,7 +170,13 @@ object OidcServer extends IOApp {
             case _ => List.empty
           }) ++
           (config.verifyClientMethod match {
-            case VerifyClientMethod.ViaApiEndpoint => List("CanGetOidcClient", "CanGetConsumers")
+            case VerifyClientMethod.ViaApiEndpoint =>
+              val base = List("CanGetOidcClient", "CanVerifyOidcClient", "CanGetConsumers")
+              val createConsumer =
+                if (config.enableDynamicClientRegistration || !config.skipClientBootstrap)
+                  List("CanCreateConsumer")
+                else Nil
+              base ++ createConsumer
             case _ => List.empty
           })
 
@@ -254,6 +261,10 @@ object OidcServer extends IOApp {
           codeService <- CodeService(config)
           jwtService <- JwtService(config)
           statsService <- StatsService()
+          statusService <- StatusService
+            .create(config, jwtService)
+            .allocated
+            .map(_._1)
           rateLimitConfig = RateLimitConfig.fromEnv
           rateLimitService <- InMemoryRateLimitService(rateLimitConfig)
           revocationService <- InMemoryTokenRevocationService(
@@ -297,6 +308,7 @@ object OidcServer extends IOApp {
           )
           clientsEndpoint = ClientsEndpoint(authService)
           statsEndpoint = StatsEndpoint(statsService, config)
+          statusEndpoint = StatusEndpoint(statusService)
           staticFilesEndpoint = StaticFilesEndpoint()
           registrationEndpoint = if (config.enableDynamicClientRegistration) {
             Some(RegistrationEndpoint(
@@ -388,6 +400,19 @@ object OidcServer extends IOApp {
                         )
                       )
 
+                // Public status page - always available
+                case req @ GET -> Root / "status" =>
+                  statusEndpoint.routes.run(req).value.flatMap {
+                    case Some(resp) => IO.pure(resp)
+                    case None       => NotFound("Status endpoint not found")
+                  }
+
+                case req @ GET -> Root / "status.json" =>
+                  statusEndpoint.routes.run(req).value.flatMap {
+                    case Some(resp) => IO.pure(resp)
+                    case None       => NotFound("Status endpoint not found")
+                  }
+
                 // Root page - simple landing with links - always available
                 case GET -> Root =>
                   val modeStatus =
@@ -458,6 +483,7 @@ object OidcServer extends IOApp {
                      |    <div class="links">
                      |      <a href="/info">Server Info</a>
                      |      <a href="/health">Health Check</a>
+                     |      <a href="/status">Status</a>
                      |    </div>
                      |    <div class="version">
                      |      <strong>Version:</strong> v${readVersion()} (${readGitCommit()})
@@ -728,6 +754,7 @@ object OidcServer extends IOApp {
                        |<li><a href="/clients">OIDC Clients</a> - View registered clients</li>
                        |<li><a href="/stats">Statistics</a> - Real-time usage statistics</li>
                        |<li><a href="/health">Health Check</a> - Service status</li>
+                       |<li><a href="/status">Status</a> - Dependency health checks (OBP API, endpoints, databases)</li>
                        |</ul>
                        |<h2>Supported Grant Types</h2>
                        |<ul>
@@ -956,6 +983,8 @@ object OidcServer extends IOApp {
                 IO(println(s"  JWKS: $baseUriString/obp-oidc/jwks")) *>
                 IO(println(s"  Clients: $baseUriString/obp-oidc/clients")) *>
                 IO(println(s"  Health Check: $baseUriString/health")) *>
+                IO(println(s"  Status (HTML):  $baseUriString/status")) *>
+                IO(println(s"  Status (JSON):  $baseUriString/status.json")) *>
                 config.obpApiUrl
                   .fold(IO.unit)(url => IO(println(s"  OBP-API: $url"))) *>
                 printOBPConfiguration(baseUriString, authService, config) *>
@@ -969,12 +998,18 @@ object OidcServer extends IOApp {
                 IO(println(s"USE_VERIFY_ENDPOINTS: ${config.useVerifyEndpoints}")) *>
                 (if (config.useVerifyEndpoints) {
                   val username = config.obpApiUsername.getOrElse("unknown")
-                  val roleEndpoints = List(
+                  val baseRoleEndpoints = List(
                     ("CanVerifyUserCredentials", "POST /obp/v6.0.0/users/verify-credentials"),
                     ("CanGetAnyUser", "GET /obp/v6.0.0/users/provider/PROVIDER/username/USERNAME"),
                     ("CanGetOidcClient", "GET /obp/v6.0.0/oidc/clients/CLIENT_ID"),
+                    ("CanVerifyOidcClient", "POST /obp/v6.0.0/oidc/clients/verify"),
                     ("CanGetConsumers", "GET /obp/v6.0.0/management/consumers")
                   )
+                  val roleEndpoints =
+                    if (config.enableDynamicClientRegistration || !config.skipClientBootstrap)
+                      baseRoleEndpoints :+
+                        ("CanCreateConsumer", "POST /obp/v5.1.0/management/consumers")
+                    else baseRoleEndpoints
                   IO(println("  All verification methods use OBP API endpoints")) *>
                   IO(println(s"  OBP API Username: $username")) *>
                   IO(println(s"  Required roles for OBP_API_USERNAME '$username':")) *>
