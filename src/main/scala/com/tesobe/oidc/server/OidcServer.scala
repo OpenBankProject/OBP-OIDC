@@ -336,69 +336,14 @@ object OidcServer extends IOApp {
                     case None           => NotFound("CSS file not found")
                   }
 
-                // Health check - always available
+                // Machine-friendly liveness probe - always available
                 case GET -> Root / "health" =>
-                  IO(println("Health check requested")) *>
-                    Ok(s"""<!DOCTYPE html>
-                       |<html>
-                       |<head>
-                       |  <title>Health Check - OBP OIDC Provider</title>
-                       |  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                       |  <link rel="stylesheet" href="/static/css/main.css">
-                       |  <style>
-                       |    body {
-                       |      min-height: 100vh;
-                       |      display: flex;
-                       |      align-items: center;
-                       |      justify-content: center;
-                       |    }
-                       |    .status {
-                       |      display: inline-flex;
-                       |      align-items: center;
-                       |      gap: 10px;
-                       |      background: #d1fae5;
-                       |      color: #065f46;
-                       |      padding: 16px 24px;
-                       |      border-radius: 8px;
-                       |      font-size: 1.1rem;
-                       |      font-weight: 600;
-                       |      margin: 30px 0;
-                       |      border: 2px solid #10b981;
-                       |    }
-                       |    .status-icon {
-                       |      width: 24px;
-                       |      height: 24px;
-                       |      background: #10b981;
-                       |      border-radius: 50%;
-                       |      display: flex;
-                       |      align-items: center;
-                       |      justify-content: center;
-                       |      color: white;
-                       |      font-weight: bold;
-                       |      font-size: 1.2rem;
-                       |    }
-                       |  </style>
-                       |</head>
-                       |<body>
-                       |  <div class="container container-small text-center">
-                       |    <h1>Health Check</h1>
-                       |    <p class="subtitle">OBP OIDC Provider</p>
-                       |    <div class="status">
-                       |      <span class="status-icon">✓</span>
-                       |      <span>Service is running</span>
-                       |    </div>
-                       |    <div class="nav">
-                       |      <a href="/">Home</a>
-                       |      <a href="/info">Server Info</a>
-                       |    </div>
-                       |  </div>
-                       |</body>
-                       |</html>""".stripMargin)
-                      .map(
-                        _.withContentType(
-                          org.http4s.headers.`Content-Type`(MediaType.text.html)
-                        )
+                  Ok("""{"status":"ok"}""")
+                    .map(
+                      _.withContentType(
+                        org.http4s.headers.`Content-Type`(MediaType.application.json)
                       )
+                    )
 
                 // Public status page - always available
                 case req @ GET -> Root / "status" =>

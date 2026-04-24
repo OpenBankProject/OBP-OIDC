@@ -216,10 +216,14 @@ class StatusService(
     }
   }
 
-  /** Result of an endpoint probe: the endpoint is considered OK if it is
-    * reachable and did not return 404 or 5xx. Any 2xx/3xx/4xx (other than 404)
-    * indicates the endpoint is deployed and processing requests, which is all
-    * we can confirm without real payloads.
+  /** Result of an endpoint probe. Decision rules:
+    *   - 5xx: FAIL (server-side breakage).
+    *   - 404 with body containing OBP-10404 ("could not find the requested URI"),
+    *     or a bare 404 with no OBP- marker at all: FAIL (endpoint not deployed).
+    *   - Anything else — including 2xx, 3xx, 4xx other than 404, and 404s carrying
+    *     any other OBP-NNNNN code (e.g. OBP-20027 "User not found by provider and
+    *     username"): OK. The endpoint is alive and processed the request; an
+    *     application-level rejection of our deliberately-bogus payload is expected.
     */
   private def probeEndpoint(
       name: String,
@@ -242,8 +246,15 @@ class StatusService(
       .run(req)
       .use { resp =>
         val code = resp.status.code
-        val ok = code != 404 && code < 500
-        IO.pure(StatusCheck(name, ok))
+        if (code >= 500) IO.pure(StatusCheck(name, ok = false))
+        else if (code == 404) {
+          resp.as[String].map { responseBody =>
+            val routeMissing =
+              responseBody.contains("OBP-10404") ||
+                !responseBody.contains("OBP-")
+            StatusCheck(name, ok = !routeMissing)
+          }
+        } else IO.pure(StatusCheck(name, ok = true))
       }
       .handleError(_ => StatusCheck(name, ok = false))
   }
