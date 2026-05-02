@@ -23,8 +23,10 @@ import scala.language.higherKinds
 import scala.io.Source
 import cats.effect.{ExitCode, IO, IOApp}
 import cats.syntax.all._
+import cats.data.Kleisli
 import com.comcast.ip4s.{Host, Port}
 import cats.effect.Ref
+import org.typelevel.ci._
 import com.tesobe.oidc.auth.{CodeService, HybridAuthService, DatabaseClient, ObpApiCredentialsService, ObpApiClientService}
 import com.tesobe.oidc.models.{ConsentChallenge, OidcClient}
 import com.tesobe.oidc.bootstrap.ClientBootstrap
@@ -45,6 +47,18 @@ import scala.concurrent.duration._
 object OidcServer extends IOApp {
 
   import HtmlUtils.htmlEncode
+
+  private def withSecurityHeaders(app: HttpApp[IO]): HttpApp[IO] =
+    Kleisli { req =>
+      app.run(req).map { resp =>
+        resp.putHeaders(
+          Header.Raw(ci"X-Content-Type-Options", "nosniff"),
+          Header.Raw(ci"X-Frame-Options", "DENY"),
+          Header.Raw(ci"Referrer-Policy", "no-referrer"),
+          Header.Raw(ci"Content-Security-Policy", "frame-ancestors 'none'")
+        )
+      }
+    }
 
   private def retryWithBackoff(
       action: IO[Either[String, String]],
@@ -911,7 +925,7 @@ object OidcServer extends IOApp {
             .default[IO]
             .withHost(host)
             .withPort(port)
-            .withHttpApp(routes)
+            .withHttpApp(withSecurityHeaders(routes))
             .build
             .use { server =>
               val baseUriString = server.baseUri.toString.stripSuffix("/")
