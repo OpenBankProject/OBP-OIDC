@@ -893,9 +893,7 @@ object OidcServer extends IOApp {
                                                            s"No endpoint handled the request: ${req.method} ${req.uri}"
                                                          )
                                                        ) *>
-                                                         NotFound(
-                                                           "Endpoint not enabled"
-                                                         )
+                                                         NotFound("OBP-OIDC: no route matches this request")
                                                    }
                                            }
                                        } else {
@@ -904,7 +902,7 @@ object OidcServer extends IOApp {
                                              s"No endpoint handled the request: ${req.method} ${req.uri}"
                                            )
                                          ) *>
-                                           NotFound("Endpoint not enabled")
+                                           NotFound("OBP-OIDC: no route matches this request")
                                        })
                                 }
                           }
