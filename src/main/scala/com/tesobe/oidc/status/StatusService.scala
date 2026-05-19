@@ -28,7 +28,23 @@ import org.slf4j.LoggerFactory
 import java.time.Instant
 import scala.concurrent.duration._
 
-case class StatusCheck(name: String, ok: Boolean)
+/** Diagnostic detail for a status check. Populated when the check exercised a
+  * remote endpoint or otherwise has actionable failure information to show.
+  */
+case class CheckDetail(
+    url: Option[String] = None,
+    method: Option[String] = None,
+    requestBody: Option[String] = None,
+    responseStatus: Option[Int] = None,
+    responseBody: Option[String] = None,
+    error: Option[String] = None
+)
+
+case class StatusCheck(
+    name: String,
+    ok: Boolean,
+    detail: Option[CheckDetail] = None
+)
 
 case class StatusReport(
     overallOk: Boolean,
@@ -37,15 +53,31 @@ case class StatusReport(
 )
 
 object StatusReport {
+  private def detailToJson(d: CheckDetail): Json = Json.obj(
+    List(
+      d.url.map("url" -> Json.fromString(_)),
+      d.method.map("method" -> Json.fromString(_)),
+      d.requestBody.map("request_body" -> Json.fromString(_)),
+      d.responseStatus.map(s => "response_status" -> Json.fromInt(s)),
+      d.responseBody.map("response_body" -> Json.fromString(_)),
+      d.error.map("error" -> Json.fromString(_))
+    ).flatten: _*
+  )
+
   def toJson(report: StatusReport): Json = Json.obj(
     "status" -> Json.fromString(if (report.overallOk) "ok" else "fail"),
     "generated_at" -> Json.fromString(report.generatedAt.toString),
     "checks" -> Json.arr(
       report.checks.map { c =>
-        Json.obj(
+        val base = List(
           "name" -> Json.fromString(c.name),
           "ok" -> Json.fromBoolean(c.ok)
         )
+        val withDetail = c.detail match {
+          case Some(d) => base :+ ("detail" -> detailToJson(d))
+          case None    => base
+        }
+        Json.obj(withDetail: _*)
       }: _*
     )
   )
@@ -94,9 +126,9 @@ class StatusService(
 
     // Authentication + probes require a DirectLogin token
     val tokenAndProbesIO: IO[List[StatusCheck]] = obtainToken().flatMap {
-      case Left(_) =>
+      case Left(err) =>
         // OBP API authentication failed. Mark all dependent checks as FAIL.
-        IO.pure(dependentFailChecks())
+        IO.pure(dependentFailChecks(err))
       case Right(token) =>
         val authOk = StatusCheck("OBP API authentication", ok = true)
         val rolesIO = checkRoles()
@@ -125,26 +157,29 @@ class StatusService(
     } yield StatusReport(overall, all, now)
   }
 
-  private def dependentFailChecks(): List[StatusCheck] = {
+  private def dependentFailChecks(authError: String): List[StatusCheck] = {
+    val skipped =
+      Some(CheckDetail(error = Some(s"Skipped — OBP API authentication failed: $authError")))
+    val authDetail = Some(CheckDetail(error = Some(authError)))
     val base = List(
-      StatusCheck("OBP API authentication", ok = false),
-      StatusCheck("OBP API roles", ok = false),
-      StatusCheck("Providers endpoint", ok = false)
+      StatusCheck("OBP API authentication", ok = false, detail = authDetail),
+      StatusCheck("OBP API roles", ok = false, detail = skipped),
+      StatusCheck("Providers endpoint", ok = false, detail = skipped)
     )
     val credential =
       if (config.verifyCredentialsMethod == VerifyCredentialsMethod.ViaApiEndpoint)
         List(
-          StatusCheck("Credential verification endpoint", ok = false),
-          StatusCheck("User lookup endpoint", ok = false)
+          StatusCheck("Credential verification endpoint", ok = false, detail = skipped),
+          StatusCheck("User lookup endpoint", ok = false, detail = skipped)
         )
       else Nil
     val clientVerify =
       if (config.verifyClientMethod == VerifyClientMethod.ViaApiEndpoint)
-        List(StatusCheck("Client verification endpoint", ok = false))
+        List(StatusCheck("Client verification endpoint", ok = false, detail = skipped))
       else Nil
     val dcr =
       if (config.enableDynamicClientRegistration)
-        List(StatusCheck("Consumer management endpoint", ok = false))
+        List(StatusCheck("Consumer management endpoint", ok = false, detail = skipped))
       else Nil
     base ++ credential ++ clientVerify ++ dcr
   }
@@ -173,17 +208,58 @@ class StatusService(
   private def checkObpReachable(): IO[StatusCheck] = {
     val name = "OBP API reachable"
     config.obpApiUrl match {
-      case None => IO.pure(StatusCheck(name, ok = false))
+      case None =>
+        IO.pure(
+          StatusCheck(
+            name,
+            ok = false,
+            detail = Some(CheckDetail(error = Some("OBP_API_URL not configured")))
+          )
+        )
       case Some(baseUrl) =>
         val endpoint = s"${baseUrl.stripSuffix("/")}/obp/v4.0.0/root"
         val req = Request[IO](Method.GET, Uri.unsafeFromString(endpoint))
         client
           .run(req)
-          .use { resp => IO.pure(resp.status.isSuccess) }
-          .handleError(_ => false)
-          .map(ok => StatusCheck(name, ok))
+          .use { resp =>
+            val code = resp.status.code
+            resp.as[String].attempt.map(_.toOption.map(truncateBody)).map { body =>
+              val ok = resp.status.isSuccess
+              val detail =
+                if (ok) None
+                else
+                  Some(
+                    CheckDetail(
+                      url = Some(endpoint),
+                      method = Some("GET"),
+                      responseStatus = Some(code),
+                      responseBody = body
+                    )
+                  )
+              StatusCheck(name, ok, detail = detail)
+            }
+          }
+          .handleError { e =>
+            StatusCheck(
+              name,
+              ok = false,
+              detail = Some(
+                CheckDetail(
+                  url = Some(endpoint),
+                  method = Some("GET"),
+                  error = Some(Option(e.getMessage).getOrElse(e.toString))
+                )
+              )
+            )
+          }
     }
   }
+
+  private val MaxBodyChars = 2000
+
+  private def truncateBody(s: String): String =
+    if (s.length <= MaxBodyChars) s
+    else s.take(MaxBodyChars) + s"... [truncated, ${s.length - MaxBodyChars} more chars]"
 
   private def checkRoles(): IO[List[StatusCheck]] = {
     val requiredRoles =
@@ -233,7 +309,8 @@ class StatusService(
       token: String,
       body: Option[Json]
   ): IO[StatusCheck] = {
-    val uri = Uri.unsafeFromString(s"${baseUrl.stripSuffix("/")}$path")
+    val fullUrl = s"${baseUrl.stripSuffix("/")}$path"
+    val uri = Uri.unsafeFromString(fullUrl)
     val base = Request[IO](method, uri).putHeaders(
       Header.Raw(ci"DirectLogin", s"token=$token")
     )
@@ -242,21 +319,48 @@ class StatusService(
         base.withEntity(json).putHeaders(`Content-Type`(MediaType.application.json))
       case None => base
     }
+    val requestBodyStr = body.map(_.noSpaces)
     client
       .run(req)
       .use { resp =>
         val code = resp.status.code
-        if (code >= 500) IO.pure(StatusCheck(name, ok = false))
-        else if (code == 404) {
-          resp.as[String].map { responseBody =>
-            val routeMissing =
-              responseBody.contains("OBP-10404") ||
-                !responseBody.contains("OBP-")
-            StatusCheck(name, ok = !routeMissing)
-          }
-        } else IO.pure(StatusCheck(name, ok = true))
+        resp.as[String].attempt.map(_.toOption.map(truncateBody)).map { respBody =>
+          val ok =
+            if (code >= 500) false
+            else if (code == 404) {
+              val raw = respBody.getOrElse("")
+              val routeMissing = raw.contains("OBP-10404") || !raw.contains("OBP-")
+              !routeMissing
+            } else true
+          val detail =
+            if (ok) None
+            else
+              Some(
+                CheckDetail(
+                  url = Some(fullUrl),
+                  method = Some(method.name),
+                  requestBody = requestBodyStr,
+                  responseStatus = Some(code),
+                  responseBody = respBody
+                )
+              )
+          StatusCheck(name, ok, detail = detail)
+        }
       }
-      .handleError(_ => StatusCheck(name, ok = false))
+      .handleError { e =>
+        StatusCheck(
+          name,
+          ok = false,
+          detail = Some(
+            CheckDetail(
+              url = Some(fullUrl),
+              method = Some(method.name),
+              requestBody = requestBodyStr,
+              error = Some(Option(e.getMessage).getOrElse(e.toString))
+            )
+          )
+        )
+      }
   }
 
   private def endpointProbes(token: String): IO[List[StatusCheck]] = {

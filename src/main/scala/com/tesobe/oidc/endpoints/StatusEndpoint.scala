@@ -34,13 +34,46 @@ class StatusEndpoint(statusService: StatusService) {
       }
   }
 
+  private def renderDetailBlock(d: com.tesobe.oidc.status.CheckDetail): String = {
+    def line(label: String, value: String): String =
+      s"""<div class="detail-line"><span class="detail-label">${htmlEncode(label)}</span> <span class="detail-value">${htmlEncode(value)}</span></div>"""
+    def block(label: String, value: String): String =
+      s"""<div class="detail-line"><span class="detail-label">${htmlEncode(label)}</span></div><pre class="detail-pre">${htmlEncode(value)}</pre>"""
+
+    val urlLine = (d.method, d.url) match {
+      case (Some(m), Some(u)) => Some(line(m, u))
+      case (None, Some(u))    => Some(line("URL", u))
+      case _                  => None
+    }
+
+    val parts = List(
+      urlLine,
+      d.requestBody.map(b => block("Request body", b)),
+      d.responseStatus.map(s => line("Response status", s.toString)),
+      d.responseBody.map(b => block("Response body", b)),
+      d.error.map(e => block("Error", e))
+    ).flatten
+
+    parts.mkString("\n")
+  }
+
   private def renderRow(c: StatusCheck): String = {
     val label = if (c.ok) "OK" else "FAIL"
     val cls = if (c.ok) "ok" else "fail"
+    val detailRow = c.detail match {
+      case Some(d) if !c.ok =>
+        val body = renderDetailBlock(d)
+        if (body.isEmpty) ""
+        else s"""
+                |<tr class="$cls detail-row">
+                |  <td colspan="2"><div class="detail-box">$body</div></td>
+                |</tr>""".stripMargin
+      case _ => ""
+    }
     s"""<tr class="$cls">
        |  <td class="name">${htmlEncode(c.name)}</td>
        |  <td class="badge"><span class="pill pill-$cls">$label</span></td>
-       |</tr>""".stripMargin
+       |</tr>$detailRow""".stripMargin
   }
 
   private def renderHtml(report: StatusReport): String = {
@@ -88,6 +121,30 @@ class StatusEndpoint(statusService: StatusService) {
        |    .pill-ok   { background: #d1fae5; color: #065f46; }
        |    .pill-fail { background: #fee2e2; color: #991b1b; }
        |    .meta { color: #6b7280; font-size: 0.9rem; margin-top: 20px; }
+       |    tr.detail-row td { padding: 0 16px 12px 16px; border-bottom: 1px solid #e9ecef; }
+       |    .detail-box {
+       |      background: #fff7f7;
+       |      border-left: 3px solid #ef4444;
+       |      padding: 10px 14px;
+       |      border-radius: 4px;
+       |      font-size: 0.85rem;
+       |      color: #3f3f46;
+       |    }
+       |    .detail-line { margin: 4px 0; word-break: break-all; }
+       |    .detail-label { font-weight: 600; color: #991b1b; margin-right: 6px; }
+       |    .detail-value { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+       |    .detail-pre {
+       |      margin: 4px 0 8px 0;
+       |      padding: 8px 10px;
+       |      background: #fff;
+       |      border: 1px solid #fecaca;
+       |      border-radius: 4px;
+       |      overflow-x: auto;
+       |      white-space: pre-wrap;
+       |      word-break: break-word;
+       |      font-size: 0.8rem;
+       |      color: #1f2937;
+       |    }
        |  </style>
        |</head>
        |<body>
