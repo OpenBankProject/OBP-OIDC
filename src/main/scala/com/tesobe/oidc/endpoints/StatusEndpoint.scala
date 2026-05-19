@@ -48,9 +48,7 @@ class StatusEndpoint(statusService: StatusService) {
 
     val parts = List(
       urlLine,
-      d.requestBody.map(b => block("Request body", b)),
       d.responseStatus.map(s => line("Response status", s.toString)),
-      d.responseBody.map(b => block("Response body", b)),
       d.error.map(e => block("Error", e))
     ).flatten
 
@@ -81,6 +79,8 @@ class StatusEndpoint(statusService: StatusService) {
     val overallCls = if (report.overallOk) "ok" else "fail"
     val rows = report.checks.map(renderRow).mkString("\n")
     val generated = htmlEncode(report.generatedAt.toString)
+    val credentialMethod = htmlEncode(report.credentialVerificationMethod)
+    val clientMethod = htmlEncode(report.clientVerificationMethod)
 
     s"""<!DOCTYPE html>
        |<html>
@@ -121,6 +121,18 @@ class StatusEndpoint(statusService: StatusService) {
        |    .pill-ok   { background: #d1fae5; color: #065f46; }
        |    .pill-fail { background: #fee2e2; color: #991b1b; }
        |    .meta { color: #6b7280; font-size: 0.9rem; margin-top: 20px; }
+       |    .config-box {
+       |      background: #f3f4f6;
+       |      border-left: 3px solid #6b7280;
+       |      padding: 10px 14px;
+       |      border-radius: 4px;
+       |      margin: 0 0 20px 0;
+       |      font-size: 0.9rem;
+       |      color: #374151;
+       |    }
+       |    .config-line { margin: 4px 0; }
+       |    .config-label { font-weight: 600; color: #1f2937; margin-right: 6px; }
+       |    .config-value { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
        |    tr.detail-row td { padding: 0 16px 12px 16px; border-bottom: 1px solid #e9ecef; }
        |    .detail-box {
        |      background: #fff7f7;
@@ -152,6 +164,16 @@ class StatusEndpoint(statusService: StatusService) {
        |    <h1>Service Status</h1>
        |    <p class="subtitle">OBP OIDC Provider</p>
        |    <div class="overall $overallCls" data-testid="status-overall">$overallLabel</div>
+       |    <div class="config-box" data-testid="status-config">
+       |      <div class="config-line">
+       |        <span class="config-label">Credential verification:</span>
+       |        <span class="config-value" data-testid="status-credential-method">$credentialMethod</span>
+       |      </div>
+       |      <div class="config-line">
+       |        <span class="config-label">Client verification:</span>
+       |        <span class="config-value" data-testid="status-client-method">$clientMethod</span>
+       |      </div>
+       |    </div>
        |    <table class="status" data-testid="status-table">
        |      <tbody>
        |$rows

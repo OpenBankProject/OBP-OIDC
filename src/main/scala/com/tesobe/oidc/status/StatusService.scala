@@ -34,9 +34,7 @@ import scala.concurrent.duration._
 case class CheckDetail(
     url: Option[String] = None,
     method: Option[String] = None,
-    requestBody: Option[String] = None,
     responseStatus: Option[Int] = None,
-    responseBody: Option[String] = None,
     error: Option[String] = None
 )
 
@@ -49,17 +47,28 @@ case class StatusCheck(
 case class StatusReport(
     overallOk: Boolean,
     checks: List[StatusCheck],
-    generatedAt: Instant
+    generatedAt: Instant,
+    credentialVerificationMethod: String,
+    clientVerificationMethod: String
 )
 
 object StatusReport {
+
+  def credentialMethodLabel(m: VerifyCredentialsMethod): String = m match {
+    case VerifyCredentialsMethod.ViaApiEndpoint    => "OBP API endpoint"
+    case VerifyCredentialsMethod.ViaOidcUsersView  => "Database (oidc_users view)"
+  }
+
+  def clientMethodLabel(m: VerifyClientMethod): String = m match {
+    case VerifyClientMethod.ViaApiEndpoint => "OBP API endpoint"
+    case VerifyClientMethod.ViaDatabase    => "Database (oidc_clients view)"
+  }
+
   private def detailToJson(d: CheckDetail): Json = Json.obj(
     List(
       d.url.map("url" -> Json.fromString(_)),
       d.method.map("method" -> Json.fromString(_)),
-      d.requestBody.map("request_body" -> Json.fromString(_)),
       d.responseStatus.map(s => "response_status" -> Json.fromInt(s)),
-      d.responseBody.map("response_body" -> Json.fromString(_)),
       d.error.map("error" -> Json.fromString(_))
     ).flatten: _*
   )
@@ -67,6 +76,12 @@ object StatusReport {
   def toJson(report: StatusReport): Json = Json.obj(
     "status" -> Json.fromString(if (report.overallOk) "ok" else "fail"),
     "generated_at" -> Json.fromString(report.generatedAt.toString),
+    "credential_verification_method" -> Json.fromString(
+      report.credentialVerificationMethod
+    ),
+    "client_verification_method" -> Json.fromString(
+      report.clientVerificationMethod
+    ),
     "checks" -> Json.arr(
       report.checks.map { c =>
         val base = List(
@@ -154,7 +169,15 @@ class StatusService(
           List(jwks) ++ dbUser.toList ++ dbClient.toList ++ dbAdmin.toList
       overall = all.forall(_.ok)
       now <- IO.realTimeInstant
-    } yield StatusReport(overall, all, now)
+    } yield StatusReport(
+      overall,
+      all,
+      now,
+      credentialVerificationMethod =
+        StatusReport.credentialMethodLabel(config.verifyCredentialsMethod),
+      clientVerificationMethod =
+        StatusReport.clientMethodLabel(config.verifyClientMethod)
+    )
   }
 
   private def dependentFailChecks(authError: String): List[StatusCheck] = {
@@ -223,21 +246,18 @@ class StatusService(
           .run(req)
           .use { resp =>
             val code = resp.status.code
-            resp.as[String].attempt.map(_.toOption.map(truncateBody)).map { body =>
-              val ok = resp.status.isSuccess
-              val detail =
-                if (ok) None
-                else
-                  Some(
-                    CheckDetail(
-                      url = Some(endpoint),
-                      method = Some("GET"),
-                      responseStatus = Some(code),
-                      responseBody = body
-                    )
+            val ok = resp.status.isSuccess
+            val detail =
+              if (ok) None
+              else
+                Some(
+                  CheckDetail(
+                    url = Some(endpoint),
+                    method = Some("GET"),
+                    responseStatus = Some(code)
                   )
-              StatusCheck(name, ok, detail = detail)
-            }
+                )
+            IO.pure(StatusCheck(name, ok, detail = detail))
           }
           .handleError { e =>
             StatusCheck(
@@ -254,12 +274,6 @@ class StatusService(
           }
     }
   }
-
-  private val MaxBodyChars = 2000
-
-  private def truncateBody(s: String): String =
-    if (s.length <= MaxBodyChars) s
-    else s.take(MaxBodyChars) + s"... [truncated, ${s.length - MaxBodyChars} more chars]"
 
   private def checkRoles(): IO[List[StatusCheck]] = {
     val requiredRoles =
@@ -319,16 +333,18 @@ class StatusService(
         base.withEntity(json).putHeaders(`Content-Type`(MediaType.application.json))
       case None => base
     }
-    val requestBodyStr = body.map(_.noSpaces)
     client
       .run(req)
       .use { resp =>
         val code = resp.status.code
-        resp.as[String].attempt.map(_.toOption.map(truncateBody)).map { respBody =>
+        val needsBody = code == 404
+        val rawBodyIO: IO[String] =
+          if (needsBody) resp.as[String].attempt.map(_.toOption.getOrElse(""))
+          else IO.pure("")
+        rawBodyIO.map { raw =>
           val ok =
             if (code >= 500) false
             else if (code == 404) {
-              val raw = respBody.getOrElse("")
               val routeMissing = raw.contains("OBP-10404") || !raw.contains("OBP-")
               !routeMissing
             } else true
@@ -339,9 +355,7 @@ class StatusService(
                 CheckDetail(
                   url = Some(fullUrl),
                   method = Some(method.name),
-                  requestBody = requestBodyStr,
-                  responseStatus = Some(code),
-                  responseBody = respBody
+                  responseStatus = Some(code)
                 )
               )
           StatusCheck(name, ok, detail = detail)
@@ -355,7 +369,6 @@ class StatusService(
             CheckDetail(
               url = Some(fullUrl),
               method = Some(method.name),
-              requestBody = requestBodyStr,
               error = Some(Option(e.getMessage).getOrElse(e.toString))
             )
           )
