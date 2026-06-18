@@ -201,8 +201,8 @@ class ObpApiClientService(
                 response.as[String].flatMap { body =>
                   logger.error(s"DirectLogin endpoint not found (404): $body")
                   // Check if OBP-API is running at all by hitting /root
-                  checkObpApiRoot(baseUrl).flatMap {
-                    case Right(rootOk) if rootOk =>
+                  ObpApiCredentialsService.checkObpApiRoot(client, baseUrl).flatMap {
+                    case Right(200) =>
                       logger.error("OBP-API is running but DirectLogin endpoint not found. Check if DirectLogin is enabled in OBP-API props.")
                       IO.pure(Left(OidcError(
                         "server_error",
@@ -232,8 +232,8 @@ class ObpApiClientService(
             // Check if OBP-API is running at all
             config.obpApiUrl match {
               case Some(baseUrl) =>
-                checkObpApiRoot(baseUrl).flatMap {
-                  case Right(rootOk) if rootOk =>
+                ObpApiCredentialsService.checkObpApiRoot(client, baseUrl).flatMap {
+                  case Right(200) =>
                     IO.pure(Left(OidcError(
                       "server_error",
                       Some(s"OBP-API is running but failed to connect to DirectLogin: ${error.getMessage}")
@@ -279,35 +279,6 @@ class ObpApiClientService(
         logger.info("Token expired or not present, obtaining new token")
         obtainDirectLoginToken()
     }
-  }
-
-  /** Check if OBP-API is running by hitting the /root endpoint
-    */
-  private def checkObpApiRoot(baseUrl: String): IO[Either[String, Boolean]] = {
-    val rootEndpoint = s"${baseUrl.stripSuffix("/")}/obp/v4.0.0/root"
-    logger.info(s"Checking if OBP-API is reachable at: $rootEndpoint")
-
-    val request = Request[IO](
-      method = Method.GET,
-      uri = Uri.unsafeFromString(rootEndpoint)
-    )
-
-    client
-      .run(request)
-      .use { response =>
-        response.status match {
-          case Status.Ok =>
-            logger.info(s"OBP-API is running at $baseUrl")
-            IO.pure(Right(true))
-          case status =>
-            logger.warn(s"OBP-API /root returned status $status")
-            IO.pure(Right(false))
-        }
-      }
-      .handleErrorWith { error =>
-        logger.warn(s"Failed to reach OBP-API at $rootEndpoint: ${error.getMessage}")
-        IO.pure(Left(error.getMessage))
-      }
   }
 
   /** Verify client credentials by calling POST /obp/v6.0.0/oidc/clients/verify

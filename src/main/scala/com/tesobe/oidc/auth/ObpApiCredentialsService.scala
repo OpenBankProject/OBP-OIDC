@@ -155,8 +155,8 @@ class ObpApiCredentialsService(
                 response.as[String].flatMap { body =>
                   logger.error(s"DirectLogin endpoint not found (404): $body")
                   // Check if OBP-API is running at all by hitting /root
-                  checkObpApiRoot(baseUrl).flatMap {
-                    case Right(rootOk) if rootOk =>
+                  ObpApiCredentialsService.checkObpApiRoot(client, baseUrl).flatMap {
+                    case Right(200) =>
                       logger.error("OBP-API is running but DirectLogin endpoint not found. Check if DirectLogin is enabled in OBP-API props.")
                       IO.pure(Left(OidcError(
                         "server_error",
@@ -186,8 +186,8 @@ class ObpApiCredentialsService(
             // Check if OBP-API is running at all
             config.obpApiUrl match {
               case Some(baseUrl) =>
-                checkObpApiRoot(baseUrl).flatMap {
-                  case Right(rootOk) if rootOk =>
+                ObpApiCredentialsService.checkObpApiRoot(client, baseUrl).flatMap {
+                  case Right(200) =>
                     IO.pure(Left(OidcError(
                       "server_error",
                       Some(s"OBP-API is running but failed to connect to DirectLogin: ${error.getMessage}")
@@ -233,35 +233,6 @@ class ObpApiCredentialsService(
         logger.info("Token expired or not present, obtaining new token")
         obtainDirectLoginToken()
     }
-  }
-
-  /** Check if OBP-API is running by hitting the /root endpoint
-    */
-  private def checkObpApiRoot(baseUrl: String): IO[Either[String, Boolean]] = {
-    val rootEndpoint = s"${baseUrl.stripSuffix("/")}/obp/v4.0.0/root"
-    logger.info(s"Checking if OBP-API is reachable at: $rootEndpoint")
-
-    val request = Request[IO](
-      method = Method.GET,
-      uri = Uri.unsafeFromString(rootEndpoint)
-    )
-
-    client
-      .run(request)
-      .use { response =>
-        response.status match {
-          case Status.Ok =>
-            logger.info(s"OBP-API is running at $baseUrl")
-            IO.pure(Right(true))
-          case status =>
-            logger.warn(s"OBP-API /root returned status $status")
-            IO.pure(Right(false))
-        }
-      }
-      .handleErrorWith { error =>
-        logger.warn(s"Failed to reach OBP-API at $rootEndpoint: ${error.getMessage}")
-        IO.pure(Left(error.getMessage))
-      }
   }
 
   /** Verify user credentials by calling POST /obp/v6.0.0/users/verify-credentials
@@ -688,6 +659,27 @@ object ObpApiCredentialsService {
         }
       } yield result
     }
+  }
+
+  /** Check if OBP-API is reachable by sending GET /obp/v6.0.0/root.
+    * Returns Right(statusCode) on a successful HTTP connection, or Left with
+    * an error message if the API could not be reached at all.
+    */
+  def checkObpApiRoot(client: Client[IO], baseUrl: String): IO[Either[String, Int]] = {
+    val rootEndpoint = s"${baseUrl.stripSuffix("/")}/obp/v6.0.0/root"
+    logger.info(s"Checking if OBP-API is reachable at: $rootEndpoint")
+    client
+      .run(Request[IO](Method.GET, Uri.unsafeFromString(rootEndpoint)))
+      .use { response =>
+        val code = response.status.code
+        if (code == 200) logger.info(s"OBP-API is running at $baseUrl")
+        else logger.warn(s"OBP-API /root returned status ${response.status}")
+        IO.pure(Right(code))
+      }
+      .handleErrorWith { error =>
+        logger.warn(s"Failed to reach OBP-API at $rootEndpoint: ${error.getMessage}")
+        IO.pure(Left(error.getMessage))
+      }
   }
 
   /** Create an ObpApiCredentialsService with http4s Ember client

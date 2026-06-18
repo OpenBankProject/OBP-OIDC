@@ -240,38 +240,21 @@ class StatusService(
           )
         )
       case Some(baseUrl) =>
-        val endpoint = s"${baseUrl.stripSuffix("/")}/obp/v4.0.0/root"
-        val req = Request[IO](Method.GET, Uri.unsafeFromString(endpoint))
-        client
-          .run(req)
-          .use { resp =>
-            val code = resp.status.code
-            val ok = resp.status.isSuccess
+        val endpoint = s"${baseUrl.stripSuffix("/")}/obp/v6.0.0/root"
+        ObpApiCredentialsService.checkObpApiRoot(client, baseUrl).map {
+          case Right(code) =>
+            val ok = code >= 200 && code < 300
             val detail =
               if (ok) None
-              else
-                Some(
-                  CheckDetail(
-                    url = Some(endpoint),
-                    method = Some("GET"),
-                    responseStatus = Some(code)
-                  )
-                )
-            IO.pure(StatusCheck(name, ok, detail = detail))
-          }
-          .handleError { e =>
+              else Some(CheckDetail(url = Some(endpoint), method = Some("GET"), responseStatus = Some(code)))
+            StatusCheck(name, ok, detail = detail)
+          case Left(err) =>
             StatusCheck(
               name,
               ok = false,
-              detail = Some(
-                CheckDetail(
-                  url = Some(endpoint),
-                  method = Some("GET"),
-                  error = Some(Option(e.getMessage).getOrElse(e.toString))
-                )
-              )
+              detail = Some(CheckDetail(url = Some(endpoint), method = Some("GET"), error = Some(err)))
             )
-          }
+        }
     }
   }
 
