@@ -355,7 +355,7 @@ class TokenEndpoint(
                 )
               )
               accessToken <- jwtService
-                .generateAccessToken(user, clientId, authCode.scope)
+                .generateAccessToken(user, clientId, authCode.scope, authCode.consent_id)
               _ <- IO.pure(
                 logger.trace(
                   s"Access token generated successfully"
@@ -371,7 +371,7 @@ class TokenEndpoint(
 
               // Generate refresh token (stateless JWT)
               refreshTokenJwt <- jwtService
-                .generateRefreshToken(user, clientId, authCode.scope)
+                .generateRefreshToken(user, clientId, authCode.scope, authCode.consent_id)
 
               // Get client details for tracking
               clientOpt <- authService.findClientByClientIdThatIsKey(clientId)
@@ -505,13 +505,13 @@ class TokenEndpoint(
               logger.info(s"User found for refresh: ${user.username}")
 
               for {
-                // Generate new access token
+                // Generate new access token (preserving any consent binding)
                 newAccessToken <- jwtService
-                  .generateAccessToken(user, clientId, tokenClaims.scope)
+                  .generateAccessToken(user, clientId, tokenClaims.scope, tokenClaims.consent_id)
 
-                // Generate new refresh token (token rotation)
+                // Generate new refresh token (token rotation, consent binding carried over)
                 newRefreshTokenJwt <- jwtService
-                  .generateRefreshToken(user, clientId, tokenClaims.scope)
+                  .generateRefreshToken(user, clientId, tokenClaims.scope, tokenClaims.consent_id)
 
                 // Get client details for tracking
                 clientOpt <- authService.findClientByClientIdThatIsKey(clientId)

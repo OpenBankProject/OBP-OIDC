@@ -61,12 +61,14 @@ trait JwtService[F[_]] {
   def generateAccessToken(
       user: User,
       clientId: String,
-      scope: String
+      scope: String,
+      consentId: Option[String] = None
   ): F[String]
   def generateRefreshToken(
       user: User,
       clientId: String,
-      scope: String
+      scope: String,
+      consentId: Option[String] = None
   ): F[String]
   def generateClientCredentialsToken(
       clientId: String,
@@ -209,7 +211,8 @@ class JwtServiceImpl(config: OidcConfig, keyPairRef: Ref[IO, KeyPair])
   def generateAccessToken(
       user: User,
       clientId: String,
-      scope: String
+      scope: String,
+      consentId: Option[String] = None
   ): IO[String] = {
     for {
       algorithm <- getAlgorithm
@@ -255,7 +258,10 @@ class JwtServiceImpl(config: OidcConfig, keyPairRef: Ref[IO, KeyPair])
       _ = logger.trace(
         s"Added azp claim to access token with value: $clientId"
       )
-      signedToken = token.sign(algorithm)
+      // Bind the token to an OBP Consent (consent authorisation flow) — resource
+      // servers (OBP-API) read this claim to resolve and validate the consent.
+      tokenWithConsent = consentId.fold(token)(cid => token.withClaim("consent_id", cid))
+      signedToken = tokenWithConsent.sign(algorithm)
 
       _ = logger.trace(
         s"Access token generated successfully with azp: $clientId"
@@ -309,7 +315,8 @@ class JwtServiceImpl(config: OidcConfig, keyPairRef: Ref[IO, KeyPair])
   def generateRefreshToken(
       user: User,
       clientId: String,
-      scope: String
+      scope: String,
+      consentId: Option[String] = None
   ): IO[String] = {
     for {
       algorithm <- getAlgorithm
@@ -342,7 +349,10 @@ class JwtServiceImpl(config: OidcConfig, keyPairRef: Ref[IO, KeyPair])
         .withClaim("scope", scope)
         .withClaim("client_id", clientId)
 
-      signedToken = token.sign(algorithm)
+      // Carry the consent binding across token rotation: the refresh grant reads this
+      // claim back and stamps it into the next access/refresh token pair.
+      tokenWithConsent = consentId.fold(token)(cid => token.withClaim("consent_id", cid))
+      signedToken = tokenWithConsent.sign(algorithm)
 
       _ = logger.info(
         s"Refresh token generated successfully for user: ${user.sub}, client: $clientId"
@@ -393,7 +403,8 @@ class JwtServiceImpl(config: OidcConfig, keyPairRef: Ref[IO, KeyPair])
             iat = decodedJWT.getIssuedAt.toInstant.getEpochSecond,
             scope = decodedJWT.getClaim("scope").asString(),
             client_id = decodedJWT.getClaim("client_id").asString(),
-            azp = azpClaim
+            azp = azpClaim,
+            consent_id = Option(decodedJWT.getClaim("consent_id").asString())
           )
         } match {
           case Success(claims) => claims.asRight[OidcError]
@@ -449,7 +460,8 @@ class JwtServiceImpl(config: OidcConfig, keyPairRef: Ref[IO, KeyPair])
             iat = decodedJWT.getIssuedAt.toInstant.getEpochSecond,
             jti = decodedJWT.getId,
             scope = decodedJWT.getClaim("scope").asString(),
-            client_id = decodedJWT.getClaim("client_id").asString()
+            client_id = decodedJWT.getClaim("client_id").asString(),
+            consent_id = Option(decodedJWT.getClaim("consent_id").asString())
           )
         } match {
           case Success(claims) => claims.asRight[OidcError]
@@ -492,11 +504,86 @@ class JwtServiceImpl(config: OidcConfig, keyPairRef: Ref[IO, KeyPair])
 
 object JwtService {
 
+  private val logger = LoggerFactory.getLogger(getClass)
+
   def apply(config: OidcConfig): IO[JwtService[IO]] = {
     for {
-      keyPair <- generateKeyPair
+      keyPair <- loadOrGenerateKeyPair(config.signingKeyPath)
       keyPairRef <- Ref.of[IO, KeyPair](keyPair)
     } yield new JwtServiceImpl(config, keyPairRef)
+  }
+
+  /** Resolve the RSA signing key pair.
+    *
+    * When OIDC_SIGNING_KEY_FILE is set, the private key is loaded from that PEM file
+    * (PKCS#8), so tokens survive restarts; if the file does not exist yet it is
+    * generated once and written there. Without the env var the key pair is ephemeral
+    * (in-memory only) — every restart invalidates all previously issued tokens.
+    */
+  private def loadOrGenerateKeyPair(signingKeyPath: Option[String]): IO[KeyPair] =
+    signingKeyPath match {
+      case None =>
+        IO(
+          logger.warn(
+            "OIDC_SIGNING_KEY_FILE not set — generating an EPHEMERAL signing key pair. " +
+              "All issued tokens become invalid when this server restarts. " +
+              "Set OIDC_SIGNING_KEY_FILE=/path/to/oidc-signing-key.pem to persist the key."
+          )
+        ) *> generateKeyPair
+      case Some(path) =>
+        IO(java.nio.file.Files.exists(java.nio.file.Paths.get(path))).flatMap {
+          case true  => loadKeyPairFromPemFile(path)
+          case false =>
+            for {
+              keyPair <- generateKeyPair
+              _ <- writeKeyPairToPemFile(path, keyPair)
+              _ <- IO(logger.info(s"Generated new RSA signing key pair and saved it to $path"))
+            } yield keyPair
+        }
+    }
+
+  /** Load a PKCS#8 PEM private key and derive the public key from its CRT parameters. */
+  private def loadKeyPairFromPemFile(path: String): IO[KeyPair] = IO {
+    import java.security.KeyFactory
+    import java.security.interfaces.RSAPrivateCrtKey
+    import java.security.spec.{PKCS8EncodedKeySpec, RSAPublicKeySpec}
+
+    val pem = new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(path)), "UTF-8")
+    val base64 = pem
+      .replace("-----BEGIN PRIVATE KEY-----", "")
+      .replace("-----END PRIVATE KEY-----", "")
+      .replaceAll("\\s", "")
+    val keyBytes = Base64.getDecoder.decode(base64)
+
+    val keyFactory = KeyFactory.getInstance("RSA")
+    val privateKey = keyFactory.generatePrivate(new PKCS8EncodedKeySpec(keyBytes)) match {
+      case crt: RSAPrivateCrtKey => crt
+      case other =>
+        throw new IllegalArgumentException(
+          s"Signing key at $path is not an RSA CRT private key (got ${other.getAlgorithm}/${other.getClass.getSimpleName}) — cannot derive the public key"
+        )
+    }
+    val publicKey = keyFactory.generatePublic(
+      new RSAPublicKeySpec(privateKey.getModulus, privateKey.getPublicExponent)
+    )
+    logger.info(s"Loaded RSA signing key pair from $path")
+    new KeyPair(publicKey, privateKey)
+  }
+
+  private def writeKeyPairToPemFile(path: String, keyPair: KeyPair): IO[Unit] = IO {
+    val encoded = Base64.getMimeEncoder(64, "\n".getBytes("UTF-8"))
+      .encodeToString(keyPair.getPrivate.getEncoded) // PKCS#8 DER
+    val pem = s"-----BEGIN PRIVATE KEY-----\n$encoded\n-----END PRIVATE KEY-----\n"
+    val p = java.nio.file.Paths.get(path)
+    Option(p.getParent).foreach(java.nio.file.Files.createDirectories(_))
+    java.nio.file.Files.write(p, pem.getBytes("UTF-8"))
+    // Restrict to owner read/write where the filesystem supports it (private key material)
+    try {
+      import java.nio.file.attribute.PosixFilePermissions
+      java.nio.file.Files.setPosixFilePermissions(p, PosixFilePermissions.fromString("rw-------"))
+    } catch {
+      case _: UnsupportedOperationException => // non-POSIX filesystem (e.g. Windows) — skip
+    }
   }
 
   private def generateKeyPair: IO[KeyPair] = IO {

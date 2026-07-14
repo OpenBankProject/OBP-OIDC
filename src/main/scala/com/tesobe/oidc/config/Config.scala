@@ -88,6 +88,7 @@ case class OidcConfig(
     database: DatabaseConfig,
     adminDatabase: DatabaseConfig,
     keyId: String = "oidc-key-1",
+    signingKeyPath: Option[String] = None, // PEM file for the RSA signing key; None = ephemeral per-startup key
     tokenExpirationSeconds: Long = 3600, // 1 hour
     codeExpirationSeconds: Long = 600, // 10 minutes
     obpApiUrl: Option[String] = None,
@@ -181,6 +182,7 @@ object Config {
       database = dbConfig,
       adminDatabase = adminDbConfig,
       keyId = sys.env.getOrElse("OIDC_KEY_ID", "oidc-key-1"),
+      signingKeyPath = sys.env.get("OIDC_SIGNING_KEY_FILE").filter(_.trim.nonEmpty),
       tokenExpirationSeconds =
         sys.env.getOrElse("OIDC_TOKEN_EXPIRATION", "3600").toLong,
       codeExpirationSeconds =

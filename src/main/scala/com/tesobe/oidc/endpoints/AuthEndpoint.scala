@@ -89,8 +89,9 @@ class AuthEndpoint(
         ChallengeQueryParamMatcher(challengeId) +&
         ConsentIdCallbackQueryParamMatcher(consentId) +&
         ConsentStatusQueryParamMatcher(consentStatus) +&
-        UserIdCallbackQueryParamMatcher(userId) =>
-      handleConsentCallback(challengeId, consentId, consentStatus, userId)
+        UsernameCallbackQueryParamMatcher(username) +&
+        ProviderCallbackQueryParamMatcher(provider) =>
+      handleConsentCallback(challengeId, consentId, consentStatus, username, provider)
   }
 
   // Query parameter matchers
@@ -118,8 +119,10 @@ class AuthEndpoint(
       extends OptionalQueryParamDecoderMatcher[String]("consent_id")
   object ConsentStatusQueryParamMatcher
       extends QueryParamDecoderMatcher[String]("consent_status")
-  object UserIdCallbackQueryParamMatcher
-      extends OptionalQueryParamDecoderMatcher[String]("user_id")
+  object UsernameCallbackQueryParamMatcher
+      extends OptionalQueryParamDecoderMatcher[String]("username")
+  object ProviderCallbackQueryParamMatcher
+      extends OptionalQueryParamDecoderMatcher[String]("provider")
 
   private def handleAuthorizationRequest(
       responseType: String,
@@ -416,14 +419,23 @@ class AuthEndpoint(
   }
 
   /** Handle the consent callback from Portal after user approves/denies consent.
-    * No OAuth token exchange needed — Hola uses Consent-Id + Consumer-Key headers
-    * to access OBP-API. We just redirect back to Hola with the consent_id.
+    *
+    * Two completion modes, chosen by whether Portal identifies the user:
+    *  - `username` + `provider` present and resolvable: standard OIDC completion —
+    *    mint an authorization code for the original client (bound to the consent_id),
+    *    so the client's token exchange yields JWTs carrying the `consent_id` claim
+    *    that resource servers (OBP-API) validate against. Resolution goes through
+    *    the OBP-API REST endpoint (users/provider/PROVIDER/username/USERNAME).
+    *  - no `username` (legacy, e.g. Hola): redirect back to the client with
+    *    `consent_status=ACCEPTED&consent_id=...` only — the client then uses
+    *    Consent-Id + Consumer-Key headers against OBP-API, no OAuth code minted.
     */
   private def handleConsentCallback(
       challengeId: String,
       consentId: Option[String],
       consentStatus: String,
-      userId: Option[String]
+      username: Option[String],
+      provider: Option[String]
   ): IO[Response[IO]] = {
     for {
       challenges <- consentChallengesRef.get
@@ -439,14 +451,32 @@ class AuthEndpoint(
                 redirectWithError(challenge.redirectUri, error)
               }
             } else if (consentStatus == "ACCEPTED" || consentStatus == "VALID") {
-              IO(logger.info(s"Consent approved for challenge: $challengeId, consent_id: $consentId")) *> {
-                // Redirect back to Hola with the consent_id — no OAuth code/token needed
-                val consentIdParam = consentId.map(c => s"&consent_id=${java.net.URLEncoder.encode(c, "UTF-8")}").getOrElse("")
-                val stateParam = challenge.state.map(s => s"&state=${java.net.URLEncoder.encode(s, "UTF-8")}").getOrElse("")
-                val location = s"${challenge.redirectUri}?consent_status=ACCEPTED${consentIdParam}${stateParam}"
-                IO(logger.info(s"Redirecting to Hola with consent_id: $location")) *>
-                  SeeOther(Location(Uri.unsafeFromString(location)))
-              }
+              IO(logger.info(s"Consent approved for challenge: $challengeId, consent_id: $consentId, username: ${username.getOrElse("none")}, provider: ${provider.getOrElse("none")}")) *>
+                resolveCallbackUser(username, provider).flatMap {
+                  case Some(user) =>
+                    // Standard OIDC completion: issue an authorization code for the
+                    // original client; the consent binding travels inside the code and
+                    // ends up as a consent_id claim in the access/ID/refresh tokens.
+                    IO(logger.info(s"Resolved consent user '${user.sub}' — issuing authorization code for client ${challenge.clientId}")) *>
+                      generateCodeForUser(
+                        user,
+                        challenge.clientId,
+                        challenge.redirectUri,
+                        challenge.scope,
+                        challenge.state,
+                        challenge.nonce,
+                        challenge.responseType,
+                        consentId
+                      )
+                  case None =>
+                    // Legacy completion (no resolvable user): hand the consent_id back
+                    // directly — client accesses OBP-API with Consent-Id + Consumer-Key headers.
+                    val consentIdParam = consentId.map(c => s"&consent_id=${java.net.URLEncoder.encode(c, "UTF-8")}").getOrElse("")
+                    val stateParam = challenge.state.map(s => s"&state=${java.net.URLEncoder.encode(s, "UTF-8")}").getOrElse("")
+                    val location = s"${challenge.redirectUri}?consent_status=ACCEPTED${consentIdParam}${stateParam}"
+                    IO(logger.info(s"No resolvable user in consent callback — legacy redirect with consent_id: $location")) *>
+                      SeeOther(Location(Uri.unsafeFromString(location)))
+                }
             } else {
               IO(logger.info(s"Consent denied for challenge: $challengeId, status: $consentStatus")) *> {
                 val error = OidcError("access_denied", Some(s"User denied consent (status: $consentStatus)"), state = challenge.state)
@@ -460,6 +490,33 @@ class AuthEndpoint(
       }
     } yield response
   }
+
+  /** Resolve the user identified by the Portal consent callback.
+    * Preferred path: `username` + `provider` — resolved via the OBP-API REST endpoint
+    * (GET /obp/v6.0.0/users/provider/PROVIDER/username/USERNAME), which needs no
+    * database access. Without `provider` it falls back to the local lookup
+    * (database view, or the login cache in API-only mode).
+    */
+  private def resolveCallbackUser(
+      username: Option[String],
+      provider: Option[String]
+  ): IO[Option[User]] =
+    username match {
+      case None => IO.pure(None)
+      case Some(uname) =>
+        val viaProvider = provider match {
+          case Some(p) => authService.getUserBySubAndProvider(uname, p)
+          case None    => IO.pure(Option.empty[User])
+        }
+        viaProvider.flatMap {
+          case found @ Some(_) => IO.pure(found)
+          case None =>
+            authService.getUserById(uname).flatTap {
+              case Some(u) => IO(logger.info(s"Consent callback user resolved locally: ${u.sub}"))
+              case None    => IO(logger.warn(s"Consent callback username '$uname' could not be resolved — falling back to legacy consent redirect"))
+            }
+        }
+    }
 
   private def generateCodeForUser(
       user: User,

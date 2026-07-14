@@ -76,7 +76,8 @@ case class AccessTokenClaims(
     scope: String,
     client_id: String,
     azp: Option[String] = None, // Authorized Party (client ID)
-    provider: Option[String] = None // Identity provider name
+    provider: Option[String] = None, // Identity provider name
+    consent_id: Option[String] = None // OBP Consent bound to this token (consent authorisation flow)
 )
 
 object AccessTokenClaims {
@@ -205,7 +206,8 @@ case class RefreshTokenClaims(
     iat: Long, // Issued at time
     jti: String, // JWT ID (unique token identifier)
     scope: String,
-    client_id: String
+    client_id: String,
+    consent_id: Option[String] = None // Carried across token rotation so refreshed access tokens stay consent-bound
 )
 
 object RefreshTokenClaims {
