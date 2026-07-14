@@ -67,7 +67,8 @@ class AuthEndpoint(
         StateQueryParamMatcher(state) +&
         NonceQueryParamMatcher(nonce) +&
         ConsentRequestIdQueryParamMatcher(consentRequestId) +&
-        BankIdQueryParamMatcher(bankId) =>
+        BankIdQueryParamMatcher(bankId) +&
+        ConsentIdQueryParamMatcher(consentId) =>
       handleAuthorizationRequest(
         responseType,
         clientId,
@@ -76,7 +77,8 @@ class AuthEndpoint(
         state,
         nonce,
         consentRequestId,
-        bankId
+        bankId,
+        consentId
       )
 
     case req @ POST -> Root / "obp-oidc" / "auth" =>
@@ -111,6 +113,8 @@ class AuthEndpoint(
       extends OptionalQueryParamDecoderMatcher[String]("consent_request_id")
   object BankIdQueryParamMatcher
       extends OptionalQueryParamDecoderMatcher[String]("bank_id")
+  object ConsentIdQueryParamMatcher
+      extends OptionalQueryParamDecoderMatcher[String]("consent_id")
 
   // Consent callback query parameter matchers
   object ChallengeQueryParamMatcher
@@ -132,7 +136,8 @@ class AuthEndpoint(
       state: Option[String],
       nonce: Option[String],
       consentRequestId: Option[String] = None,
-      bankId: Option[String] = None
+      bankId: Option[String] = None,
+      consentId: Option[String] = None
   ): IO[Response[IO]] = {
 
     IO(
@@ -205,7 +210,7 @@ class AuthEndpoint(
                      // Normal flow: show login form
                      IO(logger.info(s"Client validated, showing login form...")) *>
                        IO(println(s"Client validated, showing login form...")) *>
-                       showLoginForm(clientId, redirectUri, scope, state, nonce, responseType = responseType)
+                       showLoginForm(clientId, redirectUri, scope, state, nonce, responseType = responseType, consentId = consentId)
                  }
                }
            }
@@ -312,6 +317,7 @@ class AuthEndpoint(
       state = formData.get("state")
       nonce = formData.get("nonce")
       responseType = formData.get("response_type").getOrElse("code")
+      consentId = formData.get("consent_id")
 
       _ <- IO(
         logger.info(
@@ -335,7 +341,7 @@ class AuthEndpoint(
             ) *>
             generateCodeForUser(
               user, clientId, redirectUri, scope, state, nonce,
-              responseType, consentId = None
+              responseType, consentId = consentId
             )
         case Left(error) =>
           // Authentication failed - record failed attempt for rate limiting
@@ -357,7 +363,8 @@ class AuthEndpoint(
               state,
               nonce,
               Some("Incorrect username/password"),
-              responseType
+              responseType,
+              consentId
             )
       }
     } yield response
@@ -551,7 +558,8 @@ class AuthEndpoint(
       state: Option[String],
       nonce: Option[String],
       errorMessage: Option[String] = None,
-      responseType: String = "code"
+      responseType: String = "code",
+      consentId: Option[String] = None
   ): IO[Response[IO]] = {
 
     IO(logger.info(s"showLoginForm called for clientId: $clientId")) *>
@@ -565,6 +573,9 @@ class AuthEndpoint(
           .getOrElse("")
         nonceParam = nonce
           .map(n => s"""<input type="hidden" name="nonce" value="${htmlEncode(n)}">""")
+          .getOrElse("")
+        consentIdParam = consentId
+          .map(c => s"""<input type="hidden" name="consent_id" value="${htmlEncode(c)}">""")
           .getOrElse("")
 
         providerOptions = providers
@@ -688,6 +699,7 @@ class AuthEndpoint(
             <input type="hidden" name="response_type" value="${htmlEncode(responseType)}">
             $stateParam
             $nonceParam
+            $consentIdParam
 
             <button type="submit">Sign In</button>
           </form>
