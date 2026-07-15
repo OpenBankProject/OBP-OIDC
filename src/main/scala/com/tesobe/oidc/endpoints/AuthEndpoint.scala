@@ -200,13 +200,20 @@ class AuthEndpoint(
                      redirectWithError(redirectUri, error)
                    }
                } else {
-                 consentRequestId match {
-                   case Some(crId) =>
-                     // Consent flow: skip login form, redirect straight to Portal
-                     // The user will authenticate on Portal (which does its own OAuth with OBP-OIDC)
+                 (consentRequestId, consentId) match {
+                   case (Some(crId), _) =>
+                     // OBP consent-request flow: skip login form, redirect straight to Portal.
+                     // The user will authenticate on Portal (which does its own OAuth with OBP-OIDC).
                      IO(logger.info(s"Client validated, consent_request_id present — skipping login, redirecting to Portal...")) *>
                        redirectToPortalForConsent(clientId, redirectUri, scope, state, nonce, responseType, crId, bankId.getOrElse(""))
-                   case None =>
+                   case (_, Some(cid)) =>
+                     // UK Open Banking flow: the TPP has already lodged an account-access consent
+                     // (status AWAITINGAUTHORISATION). Route the PSU to Portal to authenticate and
+                     // approve it; Portal calls OBP-API to authorise the consent, then redirects back
+                     // to /consent-callback so we mint a code bound to this consent_id.
+                     IO(logger.info(s"Client validated, UK consent_id present ($cid) — redirecting to Portal for UK consent approval...")) *>
+                       redirectToPortalForUKConsent(clientId, redirectUri, scope, state, nonce, responseType, cid, bankId.getOrElse(""))
+                   case _ =>
                      // Normal flow: show login form
                      IO(logger.info(s"Client validated, showing login form...")) *>
                        IO(println(s"Client validated, showing login form...")) *>
@@ -421,6 +428,59 @@ class AuthEndpoint(
         s"&oidc_return_url=${java.net.URLEncoder.encode(oidcReturnUrl, "UTF-8")}"
 
       _ <- IO(logger.info(s"Redirecting to Portal for consent: $portalUrl"))
+      response <- SeeOther(Location(Uri.unsafeFromString(portalUrl)))
+    } yield response
+  }
+
+  /** Store authorization state and redirect to Portal for UK Open Banking consent approval.
+    *
+    * Unlike the OBP consent-request flow, the UK consent already exists (the TPP lodged it
+    * via POST /account-access-consents and passed its consent_id here). Portal authenticates
+    * the PSU, calls OBP-API to authorise that consent (status → AUTHORISED, bound to the PSU),
+    * then redirects back to /consent-callback where we mint the authorization code — so the
+    * TPP's token carries the consent_id claim that OBP-API validates on data calls.
+    */
+  private def redirectToPortalForUKConsent(
+      clientId: String,
+      redirectUri: String,
+      scope: String,
+      state: Option[String],
+      nonce: Option[String],
+      responseType: String,
+      consentId: String,
+      bankId: String
+  ): IO[Response[IO]] = {
+    for {
+      challengeId <- IO(UUID.randomUUID().toString)
+      exp = Instant.now().plusSeconds(config.codeExpirationSeconds).getEpochSecond
+
+      challenge = ConsentChallenge(
+        challenge = challengeId,
+        clientId = clientId,
+        redirectUri = redirectUri,
+        scope = scope,
+        state = state,
+        nonce = nonce,
+        responseType = responseType,
+        consentRequestId = consentId, // reused to carry the UK consent_id (not read back on callback)
+        bankId = bankId,
+        exp = exp
+      )
+
+      _ <- consentChallengesRef.update(_ + (challengeId -> challenge))
+      _ <- IO(logger.info(s"Created consent challenge: $challengeId for UK consent_id: $consentId, redirecting to Portal"))
+
+      oidcReturnUrl = s"${config.issuer}/consent-callback?challenge=${java.net.URLEncoder.encode(challengeId, "UTF-8")}"
+
+      // Portal reads api_standard=UKOpenBanking to drive the UK approval page (which calls
+      // OBP-API's consent authorise endpoint) instead of the OBP consent-request page.
+      portalUrl = s"${config.obpPortalBaseUrl}/login/obp-oidc" +
+        s"?consent_id=${java.net.URLEncoder.encode(consentId, "UTF-8")}" +
+        s"&api_standard=UKOpenBanking" +
+        s"&bank_id=${java.net.URLEncoder.encode(bankId, "UTF-8")}" +
+        s"&oidc_return_url=${java.net.URLEncoder.encode(oidcReturnUrl, "UTF-8")}"
+
+      _ <- IO(logger.info(s"Redirecting to Portal for UK consent: $portalUrl"))
       response <- SeeOther(Location(Uri.unsafeFromString(portalUrl)))
     } yield response
   }
