@@ -49,7 +49,8 @@ case class StatusReport(
     checks: List[StatusCheck],
     generatedAt: Instant,
     credentialVerificationMethod: String,
-    clientVerificationMethod: String
+    clientVerificationMethod: String,
+    dynamicClientRegistrationEnabled: Boolean
 )
 
 object StatusReport {
@@ -81,6 +82,9 @@ object StatusReport {
     ),
     "client_verification_method" -> Json.fromString(
       report.clientVerificationMethod
+    ),
+    "dynamic_client_registration_enabled" -> Json.fromBoolean(
+      report.dynamicClientRegistrationEnabled
     ),
     "checks" -> Json.arr(
       report.checks.map { c =>
@@ -176,7 +180,8 @@ class StatusService(
       credentialVerificationMethod =
         StatusReport.credentialMethodLabel(config.verifyCredentialsMethod),
       clientVerificationMethod =
-        StatusReport.clientMethodLabel(config.verifyClientMethod)
+        StatusReport.clientMethodLabel(config.verifyClientMethod),
+      dynamicClientRegistrationEnabled = config.enableDynamicClientRegistration
     )
   }
 

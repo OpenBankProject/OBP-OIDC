@@ -81,6 +81,7 @@ class StatusEndpoint(statusService: StatusService) {
     val generated = htmlEncode(report.generatedAt.toString)
     val credentialMethod = htmlEncode(report.credentialVerificationMethod)
     val clientMethod = htmlEncode(report.clientVerificationMethod)
+    val dcrStatus = if (report.dynamicClientRegistrationEnabled) "Enabled" else "Disabled"
 
     s"""<!DOCTYPE html>
        |<html>
@@ -172,6 +173,10 @@ class StatusEndpoint(statusService: StatusService) {
        |      <div class="config-line">
        |        <span class="config-label">Client verification:</span>
        |        <span class="config-value" data-testid="status-client-method">$clientMethod</span>
+       |      </div>
+       |      <div class="config-line">
+       |        <span class="config-label">Dynamic Client Registration:</span>
+       |        <span class="config-value" data-testid="status-dcr">$dcrStatus</span>
        |      </div>
        |    </div>
        |    <table class="status" data-testid="status-table">
