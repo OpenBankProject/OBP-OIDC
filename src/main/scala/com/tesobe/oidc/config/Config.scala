@@ -99,7 +99,7 @@ case class OidcConfig(
     logoAltText: String = "Open Bank Project",
     obpPortalBaseUrl: String = "http://localhost:5174",
     skipClientBootstrap: Boolean = false,
-    enableDynamicClientRegistration: Boolean = false,
+    enableDynamicClientRegistration: Boolean = true,
     useVerifyEndpoints: Boolean = false,
     obpApiUsername: Option[String] = None,
     obpApiPassword: Option[String] = None,
@@ -206,7 +206,7 @@ object Config {
       skipClientBootstrap =
         sys.env.getOrElse("OIDC_SKIP_CLIENT_BOOTSTRAP", "false").toBoolean,
       enableDynamicClientRegistration =
-        sys.env.getOrElse("ENABLE_DYNAMIC_CLIENT_REGISTRATION", "false").toBoolean,
+        sys.env.getOrElse("ENABLE_DYNAMIC_CLIENT_REGISTRATION", "true").toBoolean,
       useVerifyEndpoints =
         sys.env.getOrElse("USE_VERIFY_ENDPOINTS", "false").toBoolean,
       obpApiUsername = sys.env.get("OBP_API_USERNAME"),
