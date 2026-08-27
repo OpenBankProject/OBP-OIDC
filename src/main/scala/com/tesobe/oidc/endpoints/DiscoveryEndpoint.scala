@@ -30,15 +30,44 @@ import org.http4s.dsl.io._
 
 class DiscoveryEndpoint(config: OidcConfig) {
 
+  /** The discovery document is served at every location a standards-following
+    * client may look. For an issuer with a path component (https://host/obp-oidc):
+    *
+    *   - RFC 8414 inserts the well-known segment BETWEEN host and path:
+    *       /.well-known/oauth-authorization-server/obp-oidc
+    *       /.well-known/openid-configuration/obp-oidc
+    *   - OIDC Discovery appends it AFTER the issuer path:
+    *       /obp-oidc/.well-known/openid-configuration
+    *   - Some OAuth clients also try the appended OAuth form:
+    *       /obp-oidc/.well-known/oauth-authorization-server
+    *
+    * MCP clients (Claude Code SDK, OpenAI Codex) try the RFC 8414 forms first
+    * and may fall back to guessed default endpoint paths if discovery fails,
+    * so all four must resolve.
+    */
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
+    // OIDC Discovery: well-known appended to the issuer path
     case GET -> Root / "obp-oidc" / ".well-known" / "openid-configuration" =>
       getConfiguration
     case HEAD -> Root / "obp-oidc" / ".well-known" / "openid-configuration" =>
       getConfigurationHead
+    case GET -> Root / "obp-oidc" / ".well-known" / "oauth-authorization-server" =>
+      getConfiguration
+    case HEAD -> Root / "obp-oidc" / ".well-known" / "oauth-authorization-server" =>
+      getConfigurationHead
+    // RFC 8414: well-known inserted between host and issuer path
+    case GET -> Root / ".well-known" / "oauth-authorization-server" / "obp-oidc" =>
+      getConfiguration
+    case HEAD -> Root / ".well-known" / "oauth-authorization-server" / "obp-oidc" =>
+      getConfigurationHead
+    case GET -> Root / ".well-known" / "openid-configuration" / "obp-oidc" =>
+      getConfiguration
+    case HEAD -> Root / ".well-known" / "openid-configuration" / "obp-oidc" =>
+      getConfigurationHead
   }
 
-  private def getConfiguration: IO[Response[IO]] = {
-    val configuration = OidcConfiguration(
+  private def buildConfiguration: OidcConfiguration =
+    OidcConfiguration(
       issuer = config.issuer,
       authorization_endpoint = s"${config.issuer}/auth",
       token_endpoint = s"${config.issuer}/token",
@@ -59,34 +88,12 @@ class DiscoveryEndpoint(config: OidcConfig) {
         List("client_secret_post", "client_secret_basic")
     )
 
-    Ok(configuration.asJson)
-  }
+  private def getConfiguration: IO[Response[IO]] =
+    Ok(buildConfiguration.asJson)
 
-  private def getConfigurationHead: IO[Response[IO]] = {
-    val configuration = OidcConfiguration(
-      issuer = config.issuer,
-      authorization_endpoint = s"${config.issuer}/auth",
-      token_endpoint = s"${config.issuer}/token",
-      userinfo_endpoint = s"${config.issuer}/userinfo",
-      jwks_uri = s"${config.issuer}/jwks",
-      revocation_endpoint = s"${config.issuer}/revoke",
-      registration_endpoint = if (config.enableDynamicClientRegistration) Some(s"${config.issuer}/connect/register") else None,
-      response_types_supported = List("code", "code id_token"),
-      subject_types_supported = List("public"),
-      id_token_signing_alg_values_supported = List("RS256"),
-      scopes_supported = List("openid", "profile", "email"),
-      token_endpoint_auth_methods_supported =
-        List("client_secret_post", "client_secret_basic", "none"),
-      claims_supported = List("sub", "name", "email", "email_verified", "consent_id"),
-      grant_types_supported =
-        List("authorization_code", "refresh_token", "client_credentials"),
-      revocation_endpoint_auth_methods_supported =
-        List("client_secret_post", "client_secret_basic")
-    )
-
+  private def getConfigurationHead: IO[Response[IO]] =
     // For HEAD requests, return OK with proper headers but no body
-    Ok(configuration.asJson).map(_.withBodyStream(fs2.Stream.empty))
-  }
+    Ok(buildConfiguration.asJson).map(_.withBodyStream(fs2.Stream.empty))
 }
 
 object DiscoveryEndpoint {

@@ -731,38 +731,20 @@ object OidcServer extends IOApp {
                       )
                   } yield response
 
-                // OIDC Discovery
-                case GET -> Root / "obp-oidc" / ".well-known" / "openid-configuration" =>
-                  discoveryEndpoint.routes
-                    .run(
-                      org.http4s.Request[IO](
-                        org.http4s.Method.GET,
-                        org.http4s.Uri.unsafeFromString(
-                          "/obp-oidc/.well-known/openid-configuration"
-                        )
-                      )
-                    )
-                    .value
-                    .flatMap {
-                      case Some(resp) => IO.pure(resp)
-                      case None => NotFound("Discovery endpoint not found")
-                    }
+                // OIDC / OAuth discovery — served at all standard well-known
+                // locations (OIDC path-appended and RFC 8414 path-inserted
+                // forms); see DiscoveryEndpoint for the full list.
+                case req @ (GET | HEAD) -> Root / "obp-oidc" / ".well-known" / ("openid-configuration" | "oauth-authorization-server") =>
+                  discoveryEndpoint.routes.run(req).value.flatMap {
+                    case Some(resp) => IO.pure(resp)
+                    case None       => NotFound("Discovery endpoint not found")
+                  }
 
-                case HEAD -> Root / "obp-oidc" / ".well-known" / "openid-configuration" =>
-                  discoveryEndpoint.routes
-                    .run(
-                      org.http4s.Request[IO](
-                        org.http4s.Method.HEAD,
-                        org.http4s.Uri.unsafeFromString(
-                          "/obp-oidc/.well-known/openid-configuration"
-                        )
-                      )
-                    )
-                    .value
-                    .flatMap {
-                      case Some(resp) => IO.pure(resp)
-                      case None => NotFound("Discovery endpoint not found")
-                    }
+                case req @ (GET | HEAD) -> Root / ".well-known" / ("openid-configuration" | "oauth-authorization-server") / "obp-oidc" =>
+                  discoveryEndpoint.routes.run(req).value.flatMap {
+                    case Some(resp) => IO.pure(resp)
+                    case None       => NotFound("Discovery endpoint not found")
+                  }
 
                 // JWKS
                 case GET -> Root / "obp-oidc" / "jwks" =>
