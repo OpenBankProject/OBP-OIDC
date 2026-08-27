@@ -358,7 +358,10 @@ case class ClientRegistrationResponse(
 )
 
 object ClientRegistrationResponse {
-  implicit val encoder: Encoder[ClientRegistrationResponse] = deriveEncoder
+  // RFC 7591: optional metadata a client did not supply must be omitted from
+  // the response, not returned as null (strict clients reject null values)
+  implicit val encoder: Encoder[ClientRegistrationResponse] =
+    deriveEncoder[ClientRegistrationResponse].mapJson(_.deepDropNullValues)
   implicit val decoder: Decoder[ClientRegistrationResponse] = deriveDecoder
 }
 
