@@ -91,6 +91,7 @@ case class OidcConfig(
     signingKeyPath: Option[String] = None, // PEM file for the RSA signing key; None = ephemeral per-startup key
     tokenExpirationSeconds: Long = 3600, // 1 hour
     codeExpirationSeconds: Long = 600, // 10 minutes
+    parExpirationSeconds: Long = 90, // RFC 9126 recommends a short PAR request_uri lifetime
     obpApiUrl: Option[String] = None,
     localDevelopmentMode: Boolean = false,
     logoUrl: Option[String] = Some(
@@ -106,7 +107,20 @@ case class OidcConfig(
     obpApiConsumerKey: Option[String] = None,
     obpApiRetryMaxAttempts: Int = 60,
     obpApiRetryDelaySeconds: Int = 30,
-    dbVendor: DbVendor = DbVendor.PostgreSQL
+    dbVendor: DbVendor = DbVendor.PostgreSQL,
+    // FAPI 1.0 Advanced tls_client_auth (RFC 8705): OBP-OIDC never terminates TLS
+    // itself, so this trusts a client certificate forwarded by a reverse proxy in
+    // mtlsClientCertHeader. Off by default — only enable once the proxy is
+    // configured to always overwrite this header (never pass through a
+    // client-supplied value) and to only set it after a real TLS handshake
+    // presented and validated a client certificate.
+    mtlsEnabled: Boolean = false,
+    mtlsClientCertHeader: String = "X-SSL-Client-Cert",
+    // FAPI 1.0 Advanced's strict profile disallows plain RSASSA (RS256); PS256
+    // (RSASSA-PSS) is required instead. Kept RS256 by default — flipping this is a
+    // breaking change for every existing client validating tokens against this
+    // server's JWKS, so it must be an explicit opt-in, not silently switched.
+    signingAlgorithm: String = "RS256"
 ) {
 
   /** Derived method settings from useVerifyEndpoints */
@@ -187,6 +201,8 @@ object Config {
         sys.env.getOrElse("OIDC_TOKEN_EXPIRATION", "3600").toLong,
       codeExpirationSeconds =
         sys.env.getOrElse("OIDC_CODE_EXPIRATION", "600").toLong,
+      parExpirationSeconds =
+        sys.env.getOrElse("OIDC_PAR_EXPIRATION", "90").toLong,
       obpApiUrl = sys.env.get("OBP_API_URL"),
       localDevelopmentMode =
         sys.env.getOrElse("LOCAL_DEVELOPMENT_MODE", "false").toBoolean,
@@ -214,7 +230,10 @@ object Config {
       obpApiConsumerKey = sys.env.get("OBP_API_CONSUMER_KEY"),
       obpApiRetryMaxAttempts = sys.env.getOrElse("OBP_API_RETRY_MAX_ATTEMPTS", "60").toInt,
       obpApiRetryDelaySeconds = sys.env.getOrElse("OBP_API_RETRY_DELAY_SECONDS", "30").toInt,
-      dbVendor = dbVendor
+      dbVendor = dbVendor,
+      mtlsEnabled = sys.env.getOrElse("OIDC_MTLS_ENABLED", "false").toBoolean,
+      mtlsClientCertHeader = sys.env.getOrElse("OIDC_MTLS_CLIENT_CERT_HEADER", "X-SSL-Client-Cert"),
+      signingAlgorithm = sys.env.getOrElse("OIDC_SIGNING_ALGORITHM", "RS256")
     )
   }
 }

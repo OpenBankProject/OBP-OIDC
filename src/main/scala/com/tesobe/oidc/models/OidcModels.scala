@@ -38,7 +38,17 @@ case class OidcConfiguration(
     token_endpoint_auth_methods_supported: List[String],
     claims_supported: List[String],
     grant_types_supported: List[String],
-    revocation_endpoint_auth_methods_supported: List[String]
+    revocation_endpoint_auth_methods_supported: List[String],
+    // PKCE (RFC 7636 / RFC 8414): advertised code_challenge methods. FAPI requires S256.
+    code_challenge_methods_supported: List[String] = List("S256"),
+    // PAR (RFC 9126)
+    pushed_authorization_request_endpoint: Option[String] = None,
+    require_pushed_authorization_requests: Boolean = false,
+    // private_key_jwt (RFC 7523): algorithms this server accepts on a client_assertion signature.
+    token_endpoint_auth_signing_alg_values_supported: List[String] =
+      List("RS256", "RS384", "RS512", "ES256", "ES384", "ES512"),
+    // mTLS / tls_client_auth (RFC 8705): whether access tokens are certificate-bound (cnf claim).
+    tls_client_certificate_bound_access_tokens: Boolean = false
 )
 
 object OidcConfiguration {
@@ -127,7 +137,13 @@ case class OidcClient(
     response_types: List[String] = List("code"),
     scopes: List[String] = List("openid", "profile", "email"),
     token_endpoint_auth_method: String = "client_secret_post",
-    created_at: Option[String] = None
+    created_at: Option[String] = None,
+    // FAPI 1.0 Advanced: URL where this client publishes its JWKS, used to verify
+    // signed request objects and private_key_jwt client assertions.
+    jwks_uri: Option[String] = None,
+    // FAPI 1.0 Advanced (tls_client_auth / RFC 8705): the client's registered mTLS
+    // certificate (PEM), matched against what the client presents at token request time.
+    client_certificate: Option[String] = None
 )
 
 object OidcClient {
@@ -161,8 +177,37 @@ case class AuthorizationCode(
     nonce: Option[String] = None,
     provider: Option[String] = None,
     exp: Long, // Expiration time
-    consent_id: Option[String] = None
+    consent_id: Option[String] = None,
+    // PKCE (RFC 7636): the S256 code_challenge captured at the authorization request,
+    // verified against the code_verifier at token exchange. None = client did not use PKCE.
+    code_challenge: Option[String] = None,
+    code_challenge_method: Option[String] = None
 )
+
+// PAR (RFC 9126): parameters pushed to /par ahead of the authorization request,
+// resolved later at GET /auth via the request_uri it was issued.
+case class PushedAuthorizationRequest(
+    request_uri: String,
+    client_id: String,
+    response_type: String,
+    redirect_uri: String,
+    scope: String,
+    state: Option[String] = None,
+    nonce: Option[String] = None,
+    consent_request_id: Option[String] = None,
+    bank_id: Option[String] = None,
+    consent_id: Option[String] = None,
+    code_challenge: Option[String] = None,
+    code_challenge_method: Option[String] = None,
+    exp: Long
+)
+
+case class ParResponse(request_uri: String, expires_in: Long)
+
+object ParResponse {
+  implicit val encoder: Encoder[ParResponse] = deriveEncoder
+  implicit val decoder: Decoder[ParResponse] = deriveDecoder
+}
 
 object AuthorizationCode {
   implicit val encoder: Encoder[AuthorizationCode] = deriveEncoder
@@ -312,7 +357,14 @@ case class ClientRegistrationRequest(
     token_endpoint_auth_method: Option[String] = None,
     logo_uri: Option[String] = None,
     client_uri: Option[String] = None,
-    contacts: Option[List[String]] = None
+    contacts: Option[List[String]] = None,
+    // FAPI 1.0 Advanced: jwks_uri is the RFC 7591-standard field, used to verify
+    // signed request objects and private_key_jwt client assertions.
+    jwks_uri: Option[String] = None,
+    // Not an RFC 7591-standard field (no field standardizes an inline mTLS cert at
+    // registration time); a pragmatic extension so tls_client_auth clients can
+    // register their certificate the same way private_key_jwt clients register jwks_uri.
+    client_certificate: Option[String] = None
 )
 
 object ClientRegistrationRequest {
@@ -331,7 +383,9 @@ object ClientRegistrationRequest {
   val SUPPORTED_AUTH_METHODS: Set[String] = Set(
     "client_secret_post",
     "client_secret_basic",
-    "none"
+    "none",
+    "private_key_jwt",
+    "tls_client_auth"
   )
 
   val DEFAULT_GRANT_TYPES: List[String] = List("authorization_code")
@@ -354,7 +408,9 @@ case class ClientRegistrationResponse(
     token_endpoint_auth_method: String,
     logo_uri: Option[String] = None,
     client_uri: Option[String] = None,
-    contacts: Option[List[String]] = None
+    contacts: Option[List[String]] = None,
+    jwks_uri: Option[String] = None,
+    client_certificate: Option[String] = None
 )
 
 object ClientRegistrationResponse {

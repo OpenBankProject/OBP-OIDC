@@ -20,13 +20,15 @@
 package com.tesobe.oidc.endpoints
 
 import cats.effect.{IO, Ref}
-import com.tesobe.oidc.auth.{AuthService, CodeService}
+import com.tesobe.oidc.auth.{AuthService, CodeService, ParService, RequestObjectService}
 import com.tesobe.oidc.endpoints.HtmlUtils.htmlEncode
 import com.tesobe.oidc.models.{ConsentChallenge, OidcError, User}
 import com.tesobe.oidc.ratelimit.RateLimitService
 import com.tesobe.oidc.config.OidcConfig
 import com.tesobe.oidc.tokens.JwtService
+import io.circe.syntax._
 import org.http4s._
+import org.http4s.circe._
 import org.http4s.dsl.io._
 import org.http4s.headers.Location
 import org.slf4j.LoggerFactory
@@ -42,7 +44,9 @@ class AuthEndpoint(
     rateLimitService: RateLimitService[IO],
     config: OidcConfig,
     jwtService: JwtService[IO],
-    consentChallengesRef: Ref[IO, Map[String, ConsentChallenge]]
+    consentChallengesRef: Ref[IO, Map[String, ConsentChallenge]],
+    parService: ParService[IO],
+    requestObjectService: RequestObjectService[IO]
 ) {
 
   private val logger = LoggerFactory.getLogger(getClass)
@@ -59,6 +63,24 @@ class AuthEndpoint(
         if config.localDevelopmentMode =>
       showStandaloneLoginForm()
 
+    // Signed request object (JAR / RFC 9101, FAPI 1.0 Advanced): the actual
+    // authorization parameters are inside a JWT signed with the client's own
+    // key, verified against its published JWKS. Matched first so a `request`
+    // param always wins over any (untrusted) plain query params sent alongside it.
+    case GET -> Root / "obp-oidc" / "auth" :?
+        RequestObjectQueryParamMatcher(requestJws) +&
+        ClientIdQueryParamMatcher(clientId) =>
+      handleRequestObject(requestJws, clientId)
+
+    // PAR (RFC 9126): request_uri resolves to a previously pushed set of
+    // authorization parameters. Matched before the direct-parameter case so
+    // request_uri-bearing requests (which omit response_type/redirect_uri/
+    // scope from the query string) are intercepted here.
+    case GET -> Root / "obp-oidc" / "auth" :?
+        RequestUriQueryParamMatcher(requestUri) +&
+        ClientIdQueryParamMatcher(clientId) =>
+      handlePushedAuthorizationRequest(requestUri, clientId)
+
     case GET -> Root / "obp-oidc" / "auth" :?
         ResponseTypeQueryParamMatcher(responseType) +&
         ClientIdQueryParamMatcher(clientId) +&
@@ -68,7 +90,9 @@ class AuthEndpoint(
         NonceQueryParamMatcher(nonce) +&
         ConsentRequestIdQueryParamMatcher(consentRequestId) +&
         BankIdQueryParamMatcher(bankId) +&
-        ConsentIdQueryParamMatcher(consentId) =>
+        ConsentIdQueryParamMatcher(consentId) +&
+        CodeChallengeQueryParamMatcher(codeChallenge) +&
+        CodeChallengeMethodQueryParamMatcher(codeChallengeMethod) =>
       handleAuthorizationRequest(
         responseType,
         clientId,
@@ -78,7 +102,9 @@ class AuthEndpoint(
         nonce,
         consentRequestId,
         bankId,
-        consentId
+        consentId,
+        codeChallenge,
+        codeChallengeMethod
       )
 
     case req @ POST -> Root / "obp-oidc" / "auth" =>
@@ -115,6 +141,17 @@ class AuthEndpoint(
       extends OptionalQueryParamDecoderMatcher[String]("bank_id")
   object ConsentIdQueryParamMatcher
       extends OptionalQueryParamDecoderMatcher[String]("consent_id")
+  // PKCE (RFC 7636)
+  object CodeChallengeQueryParamMatcher
+      extends OptionalQueryParamDecoderMatcher[String]("code_challenge")
+  object CodeChallengeMethodQueryParamMatcher
+      extends OptionalQueryParamDecoderMatcher[String]("code_challenge_method")
+  // PAR (RFC 9126)
+  object RequestUriQueryParamMatcher
+      extends QueryParamDecoderMatcher[String]("request_uri")
+  // Signed request object (JAR / RFC 9101)
+  object RequestObjectQueryParamMatcher
+      extends QueryParamDecoderMatcher[String]("request")
 
   // Consent callback query parameter matchers
   object ChallengeQueryParamMatcher
@@ -128,6 +165,66 @@ class AuthEndpoint(
   object ProviderCallbackQueryParamMatcher
       extends OptionalQueryParamDecoderMatcher[String]("provider")
 
+  // Signed request object (JAR / RFC 9101, FAPI 1.0 Advanced): verify the JWS
+  // against the client's JWKS and continue with the claims it carries instead
+  // of trusting any plain query parameters. Verification failures return a
+  // direct JSON error — redirect_uri isn't trustworthy until the object is verified.
+  private def handleRequestObject(
+      requestJws: String,
+      clientId: String
+  ): IO[Response[IO]] = {
+    requestObjectService.resolve(requestJws, clientId).flatMap {
+      case Left(error) =>
+        IO(logger.warn(s"Request object verification failed for clientId: $clientId: ${error.error_description.getOrElse(error.error)}")) *>
+          BadRequest(error.asJson)
+      case Right(claims) =>
+        handleAuthorizationRequest(
+          claims.responseType,
+          claims.clientId,
+          claims.redirectUri,
+          claims.scope,
+          claims.state,
+          claims.nonce,
+          claims.consentRequestId,
+          claims.bankId,
+          claims.consentId,
+          claims.codeChallenge,
+          claims.codeChallengeMethod
+        )
+    }
+  }
+
+  // PAR (RFC 9126): resolve a previously pushed request_uri into a full set
+  // of authorization parameters, then continue through the normal flow.
+  // request_uri is one-time-use and validated (existence, expiry, client_id
+  // match) inside parService.consumeRequest before anything else runs.
+  // Resolution failures return a direct JSON error rather than a redirect —
+  // the redirect_uri isn't trustworthy until the request_uri itself is valid.
+  private def handlePushedAuthorizationRequest(
+      requestUri: String,
+      clientId: String
+  ): IO[Response[IO]] = {
+    parService.consumeRequest(requestUri, clientId).flatMap {
+      case Left(error) =>
+        IO(logger.warn(s"PAR resolution failed for clientId: $clientId: ${error.error_description.getOrElse(error.error)}")) *>
+          BadRequest(error.asJson)
+      case Right(par) =>
+        handleAuthorizationRequest(
+          par.response_type,
+          par.client_id,
+          par.redirect_uri,
+          par.scope,
+          par.state,
+          par.nonce,
+          par.consent_request_id,
+          par.bank_id,
+          par.consent_id,
+          par.code_challenge,
+          par.code_challenge_method
+        )
+    }
+  }
+
   private def handleAuthorizationRequest(
       responseType: String,
       clientId: String,
@@ -137,7 +234,9 @@ class AuthEndpoint(
       nonce: Option[String],
       consentRequestId: Option[String] = None,
       bankId: Option[String] = None,
-      consentId: Option[String] = None
+      consentId: Option[String] = None,
+      codeChallenge: Option[String] = None,
+      codeChallengeMethod: Option[String] = None
   ): IO[Response[IO]] = {
 
     IO(
@@ -171,6 +270,16 @@ class AuthEndpoint(
              )
              redirectWithError(redirectUri, error)
            }
+       } else if (codeChallengeMethod.exists(_ != "S256")) {
+         // PKCE (RFC 7636) + FAPI: only S256 is accepted; 'plain' is rejected.
+         IO(logger.warn(s"Unsupported code_challenge_method: ${codeChallengeMethod.getOrElse("")}")) *> {
+           val error = OidcError(
+             "invalid_request",
+             Some("code_challenge_method must be S256"),
+             state = state
+           )
+           redirectWithError(redirectUri, error)
+         }
        } else {
          // Validate client and redirect URI
          IO(
@@ -217,7 +326,7 @@ class AuthEndpoint(
                      // Normal flow: show login form
                      IO(logger.info(s"Client validated, showing login form...")) *>
                        IO(println(s"Client validated, showing login form...")) *>
-                       showLoginForm(clientId, redirectUri, scope, state, nonce, responseType = responseType, consentId = consentId)
+                       showLoginForm(clientId, redirectUri, scope, state, nonce, responseType = responseType, consentId = consentId, codeChallenge = codeChallenge, codeChallengeMethod = codeChallengeMethod)
                  }
                }
            }
@@ -325,6 +434,8 @@ class AuthEndpoint(
       nonce = formData.get("nonce")
       responseType = formData.get("response_type").getOrElse("code")
       consentId = formData.get("consent_id")
+      codeChallenge = formData.get("code_challenge")
+      codeChallengeMethod = formData.get("code_challenge_method")
 
       _ <- IO(
         logger.info(
@@ -348,7 +459,8 @@ class AuthEndpoint(
             ) *>
             generateCodeForUser(
               user, clientId, redirectUri, scope, state, nonce,
-              responseType, consentId = consentId
+              responseType, consentId = consentId,
+              codeChallenge = codeChallenge, codeChallengeMethod = codeChallengeMethod
             )
         case Left(error) =>
           // Authentication failed - record failed attempt for rate limiting
@@ -371,7 +483,9 @@ class AuthEndpoint(
               nonce,
               Some("Incorrect username/password"),
               responseType,
-              consentId
+              consentId,
+              codeChallenge,
+              codeChallengeMethod
             )
       }
     } yield response
@@ -593,12 +707,14 @@ class AuthEndpoint(
       state: Option[String],
       nonce: Option[String],
       responseType: String = "code",
-      consentId: Option[String] = None
+      consentId: Option[String] = None,
+      codeChallenge: Option[String] = None,
+      codeChallengeMethod: Option[String] = None
   ): IO[Response[IO]] = {
     for {
       _ <- statsService.incrementLoginSuccess(user.username)
       code <- codeService
-        .generateCode(clientId, redirectUri, user.sub, scope, state, nonce, user.provider, consentId)
+        .generateCode(clientId, redirectUri, user.sub, scope, state, nonce, user.provider, consentId, codeChallenge, codeChallengeMethod)
       response <- responseType match {
         case "code id_token" =>
           for {
@@ -619,7 +735,9 @@ class AuthEndpoint(
       nonce: Option[String],
       errorMessage: Option[String] = None,
       responseType: String = "code",
-      consentId: Option[String] = None
+      consentId: Option[String] = None,
+      codeChallenge: Option[String] = None,
+      codeChallengeMethod: Option[String] = None
   ): IO[Response[IO]] = {
 
     IO(logger.info(s"showLoginForm called for clientId: $clientId")) *>
@@ -636,6 +754,12 @@ class AuthEndpoint(
           .getOrElse("")
         consentIdParam = consentId
           .map(c => s"""<input type="hidden" name="consent_id" value="${htmlEncode(c)}">""")
+          .getOrElse("")
+        codeChallengeParam = codeChallenge
+          .map(c => s"""<input type="hidden" name="code_challenge" value="${htmlEncode(c)}">""")
+          .getOrElse("")
+        codeChallengeMethodParam = codeChallengeMethod
+          .map(m => s"""<input type="hidden" name="code_challenge_method" value="${htmlEncode(m)}">""")
           .getOrElse("")
 
         providerOptions = providers
@@ -760,6 +884,8 @@ class AuthEndpoint(
             $stateParam
             $nonceParam
             $consentIdParam
+            $codeChallengeParam
+            $codeChallengeMethodParam
 
             <button type="submit">Sign In</button>
           </form>
@@ -969,7 +1095,9 @@ object AuthEndpoint {
       rateLimitService: RateLimitService[IO],
       config: OidcConfig,
       jwtService: JwtService[IO],
-      consentChallengesRef: Ref[IO, Map[String, ConsentChallenge]]
+      consentChallengesRef: Ref[IO, Map[String, ConsentChallenge]],
+      parService: ParService[IO],
+      requestObjectService: RequestObjectService[IO]
   ): AuthEndpoint =
     new AuthEndpoint(
       authService,
@@ -978,6 +1106,8 @@ object AuthEndpoint {
       rateLimitService,
       config,
       jwtService,
-      consentChallengesRef
+      consentChallengesRef,
+      parService,
+      requestObjectService
     )
 }

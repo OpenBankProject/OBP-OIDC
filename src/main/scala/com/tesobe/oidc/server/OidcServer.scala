@@ -27,7 +27,7 @@ import cats.data.Kleisli
 import com.comcast.ip4s.{Host, Port}
 import cats.effect.Ref
 import org.typelevel.ci._
-import com.tesobe.oidc.auth.{CodeService, HybridAuthService, DatabaseClient, ObpApiCredentialsService, ObpApiClientService}
+import com.tesobe.oidc.auth.{CodeService, ParService, JwksClient, RequestObjectService, ClientAssertionService, MtlsService, HybridAuthService, DatabaseClient, ObpApiCredentialsService, ObpApiClientService}
 import com.tesobe.oidc.models.{ConsentChallenge, OidcClient}
 import com.tesobe.oidc.bootstrap.ClientBootstrap
 import com.tesobe.oidc.config.{Config, OidcConfig, VerifyCredentialsMethod, VerifyClientMethod}
@@ -273,6 +273,11 @@ object OidcServer extends IOApp {
 
           // Initialize services
           codeService <- CodeService(config)
+          parService <- ParService(config)
+          jwksClient <- JwksClient.create().allocated.map(_._1)
+          requestObjectService = RequestObjectService(authService, jwksClient, config)
+          clientAssertionService <- ClientAssertionService.create(authService, jwksClient)
+          mtlsService = MtlsService(config)
           jwtService <- JwtService(config)
           statsService <- StatsService()
           statusService <- StatusService
@@ -305,14 +310,19 @@ object OidcServer extends IOApp {
             rateLimitService,
             config,
             jwtService,
-            consentChallengesRef
+            consentChallengesRef,
+            parService,
+            requestObjectService
           )
+          parEndpoint = ParEndpoint(authService, parService, config)
           tokenEndpoint = TokenEndpoint(
             authService,
             codeService,
             jwtService,
             config,
-            statsService
+            statsService,
+            clientAssertionService,
+            mtlsService
           )
           userInfoEndpoint = UserInfoEndpoint(authService, jwtService)
           revocationEndpoint = RevocationEndpoint(
@@ -798,6 +808,13 @@ object OidcServer extends IOApp {
                   revocationEndpoint.routes.run(req).value.flatMap {
                     case Some(resp) => IO.pure(resp)
                     case None       => NotFound("Revocation endpoint not found")
+                  }
+
+                // PAR (RFC 9126) endpoint
+                case req @ POST -> Root / "obp-oidc" / "par" =>
+                  parEndpoint.routes.run(req).value.flatMap {
+                    case Some(resp) => IO.pure(resp)
+                    case None       => NotFound("PAR endpoint not found")
                   }
 
                 // Dynamic Client Registration endpoint (RFC 7591)
