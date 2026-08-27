@@ -76,6 +76,7 @@ object StatusReport {
 
   def toJson(report: StatusReport): Json = Json.obj(
     "status" -> Json.fromString(if (report.overallOk) "ok" else "fail"),
+    "version" -> Json.fromString(com.tesobe.oidc.BuildVersion.version),
     "generated_at" -> Json.fromString(report.generatedAt.toString),
     "credential_verification_method" -> Json.fromString(
       report.credentialVerificationMethod

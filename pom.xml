@@ -187,6 +187,20 @@
     <sourceDirectory>src/main/scala</sourceDirectory>
     <testSourceDirectory>src/test/scala</testSourceDirectory>
 
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+      </resource>
+      <!-- Package the repo-root VERSION file so the running server can report
+           which build it is (shown on /status and /status.json) -->
+      <resource>
+        <directory>${project.basedir}</directory>
+        <includes>
+          <include>VERSION</include>
+        </includes>
+      </resource>
+    </resources>
+
     <plugins>
       <!-- Scala compiler plugin -->
       <plugin>

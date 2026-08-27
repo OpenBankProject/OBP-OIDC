@@ -82,6 +82,7 @@ class StatusEndpoint(statusService: StatusService) {
     val credentialMethod = htmlEncode(report.credentialVerificationMethod)
     val clientMethod = htmlEncode(report.clientVerificationMethod)
     val dcrStatus = if (report.dynamicClientRegistrationEnabled) "Enabled" else "Disabled"
+    val version = htmlEncode(com.tesobe.oidc.BuildVersion.version)
 
     s"""<!DOCTYPE html>
        |<html>
@@ -166,6 +167,10 @@ class StatusEndpoint(statusService: StatusService) {
        |    <p class="subtitle">OBP OIDC Provider</p>
        |    <div class="overall $overallCls" data-testid="status-overall">$overallLabel</div>
        |    <div class="config-box" data-testid="status-config">
+       |      <div class="config-line">
+       |        <span class="config-label">Version:</span>
+       |        <span class="config-value" data-testid="status-version">$version</span>
+       |      </div>
        |      <div class="config-line">
        |        <span class="config-label">Credential verification:</span>
        |        <span class="config-value" data-testid="status-credential-method">$credentialMethod</span>
