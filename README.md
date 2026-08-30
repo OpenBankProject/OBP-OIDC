@@ -292,9 +292,13 @@ export LOGO_URL="https://example.com/logo.png"
 # Set logo alt text for accessibility
 export LOGO_ALT_TEXT="Company Logo"
 
-# Set OBP Portal base URL (used for forgot password link)
+# Set OBP Portal base URL (used for forgot password and register links)
 # Defaults to http://localhost:5174
 export OBP_PORTAL_BASE_URL="https://portal.example.com"
+
+# Optional: override the register link (defaults to $OBP_PORTAL_BASE_URL/register).
+# Set to an empty string to hide the "Register" link entirely.
+export OIDC_REGISTRATION_URL="https://portal.example.com/register"
 ```
 
 **Default Logo:**
@@ -327,6 +331,15 @@ The login page includes a "Forgot password?" link that sends users to the OBP Po
 - **Default**: Links to `http://localhost:5174/forgot-password`
 - **Custom Portal URL**: Set `OBP_PORTAL_BASE_URL` to your Portal host
   - Example: `export OBP_PORTAL_BASE_URL="https://portal.example.com"` → link becomes `https://portal.example.com/forgot-password`
+
+**Register Link:**
+
+The login page also shows a "Don't have an account? Register" link:
+
+- **Default**: Links to `${OBP_PORTAL_BASE_URL}/register` (i.e. `http://localhost:5174/register`)
+- **Custom URL**: Set `OIDC_REGISTRATION_URL` to any absolute URL to use a different sign-up page
+- **Disable**: Set `OIDC_REGISTRATION_URL=""` to hide the link (for deployments that don't allow self-registration)
+- The link carries a `return_to` query parameter containing the original `/obp-oidc/auth?...` authorize URL, so the Portal can send the user straight back into the OAuth flow after they have registered.
 
 **Example (Using Default OBP Logo):**
 

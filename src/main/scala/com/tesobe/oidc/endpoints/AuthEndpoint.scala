@@ -611,6 +611,37 @@ class AuthEndpoint(
     } yield response
   }
 
+  /** Rebuild the /obp-oidc/auth URL for the current request so an external page
+    * (e.g. the Portal register page) can send the user back into the flow.
+    */
+  private def buildAuthorizeUrl(
+      clientId: String,
+      redirectUri: String,
+      scope: String,
+      state: Option[String],
+      nonce: Option[String],
+      responseType: String,
+      consentId: Option[String]
+  ): String = {
+    def enc(v: String) = java.net.URLEncoder.encode(v, "UTF-8")
+    val params = Seq(
+      "response_type" -> Some(responseType),
+      "client_id" -> Some(clientId),
+      "redirect_uri" -> Some(redirectUri),
+      "scope" -> Some(scope),
+      "state" -> state,
+      "nonce" -> nonce,
+      "consent_id" -> consentId
+    ).collect { case (k, Some(v)) => s"$k=${enc(v)}" }
+    s"${config.issuer}/auth?${params.mkString("&")}"
+  }
+
+  /** Append return_to=<url> to a base URL, respecting any existing query string. */
+  private def withReturnTo(baseUrl: String, returnTo: String): String = {
+    val sep = if (baseUrl.contains("?")) "&" else "?"
+    s"$baseUrl${sep}return_to=${java.net.URLEncoder.encode(returnTo, "UTF-8")}"
+  }
+
   private def showLoginForm(
       clientId: String,
       redirectUri: String,
@@ -679,6 +710,20 @@ class AuthEndpoint(
           }
 
         forgotPasswordLink = s"${config.obpPortalBaseUrl}/forgot-password"
+
+        // Register link: points at the Portal (or OIDC_REGISTRATION_URL) and carries the
+        // current authorize URL as return_to so the Portal can send the user back into
+        // the OAuth flow once the account exists.
+        registerHtml = config.registrationUrl match {
+          case Some(registrationUrl) =>
+            val authorizeUrl = buildAuthorizeUrl(clientId, redirectUri, scope, state, nonce, responseType, consentId)
+            val href = withReturnTo(registrationUrl, authorizeUrl)
+            s"""<p class="register-prompt" style="text-align: center; margin-top: 1rem; font-size: 0.9rem;">
+              Don't have an account?
+              <a href="${htmlEncode(href)}" data-testid="register-link" style="color: #0066cc; text-decoration: none;">Register</a>
+            </p>"""
+          case None => ""
+        }
 
         logoHtml = config.logoUrl match {
           case Some(url) =>
@@ -763,6 +808,7 @@ class AuthEndpoint(
 
             <button type="submit">Sign In</button>
           </form>
+          $registerHtml
         </div>
         <script>
           (function() {
@@ -817,6 +863,15 @@ class AuthEndpoint(
         .mkString("\n            ")
 
       forgotPasswordLink = s"${config.obpPortalBaseUrl}/forgot-password"
+
+      registerHtml = config.registrationUrl match {
+        case Some(registrationUrl) =>
+          s"""<p class=\"register-prompt\" style=\"text-align: center; margin-top: 1rem; font-size: 0.9rem;\">
+              Don't have an account?
+              <a href=\"${htmlEncode(registrationUrl)}\" data-testid=\"register-link\" style=\"color: #0066cc; text-decoration: none;\">Register</a>
+            </p>"""
+        case None => ""
+      }
 
       html = s"""
       <!DOCTYPE html>
@@ -885,6 +940,7 @@ class AuthEndpoint(
 
             <button type=\"submit\">Sign In</button>
           </form>
+          $registerHtml
         </div>
         <script>
           (function() {

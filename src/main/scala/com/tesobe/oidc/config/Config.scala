@@ -98,6 +98,7 @@ case class OidcConfig(
     ),
     logoAltText: String = "Open Bank Project",
     obpPortalBaseUrl: String = "http://localhost:5174",
+    registrationUrl: Option[String] = Some("http://localhost:5174/register"), // None = hide the Register link
     skipClientBootstrap: Boolean = false,
     enableDynamicClientRegistration: Boolean = true,
     useVerifyEndpoints: Boolean = false,
@@ -144,6 +145,11 @@ object Config {
         s"$protocol://$host:$port"
     }
     val issuer = s"$baseUrl/obp-oidc"
+
+    val obpPortalBaseUrl = {
+      val url = sys.env.getOrElse("OBP_PORTAL_BASE_URL", "http://localhost:5174")
+      if (url.endsWith("/")) url.dropRight(1) else url
+    }
 
     val dbVendor = DbVendor.fromString(
       sys.env.getOrElse("DB_VENDOR", "postgresql")
@@ -199,9 +205,11 @@ object Config {
           )
         ),
       logoAltText = sys.env.getOrElse("LOGO_ALT_TEXT", "Open Bank Project"),
-      obpPortalBaseUrl = {
-        val url = sys.env.getOrElse("OBP_PORTAL_BASE_URL", "http://localhost:5174")
-        if (url.endsWith("/")) url.dropRight(1) else url
+      obpPortalBaseUrl = obpPortalBaseUrl,
+      registrationUrl = sys.env.get("OIDC_REGISTRATION_URL") match {
+        case Some(url) if url.trim.isEmpty => None // explicitly disabled
+        case Some(url)                     => Some(url.trim)
+        case None                          => Some(s"$obpPortalBaseUrl/register")
       },
       skipClientBootstrap =
         sys.env.getOrElse("OIDC_SKIP_CLIENT_BOOTSTRAP", "false").toBoolean,
