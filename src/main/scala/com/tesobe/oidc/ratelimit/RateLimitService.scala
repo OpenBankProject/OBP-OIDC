@@ -66,6 +66,18 @@ trait RateLimitService[F[_]] {
     */
   def isBlocked(ip: String, username: String): F[Boolean]
 
+  /** Count a dynamic client registration attempt from `ip` and say whether it may proceed.
+    *
+    * Registration is unauthenticated and every success creates a client (and, with OBP-API
+    * integration, a Consumer), so attempts are counted per IP and globally in a sliding
+    * one-hour window. Unlike the login limiter, every attempt counts, not only failures.
+    * Call it BEFORE processing the request; an attempt over the limit is not recorded.
+    *
+    * @return
+    *   Right(()) if allowed, Left(errorMessage) if the per-IP or global hourly cap is reached
+    */
+  def checkRegistrationAttempt(ip: String): F[Either[String, Unit]]
+
   /** Clean up old entries to prevent memory leaks.
     *
     * This should be called periodically to remove expired attempts and blocks.
@@ -78,7 +90,11 @@ case class RateLimitConfig(
     maxAttemptsPerIP: Int = 10,
     maxAttemptsPerUsername: Int = 5,
     windowDurationSeconds: Int = 300, // 5 minutes
-    blockDurationSeconds: Int = 900 // 15 minutes
+    blockDurationSeconds: Int = 900, // 15 minutes
+    // Dynamic client registration: attempts per IP and in total, per sliding hour.
+    // 0 or negative disables that cap.
+    maxRegistrationsPerIpPerHour: Int = 10,
+    maxRegistrationsGlobalPerHour: Int = 500
 )
 
 object RateLimitConfig {
@@ -99,7 +115,15 @@ object RateLimitConfig {
       blockDurationSeconds = sys.env
         .get("RATE_LIMIT_BLOCK_SECONDS")
         .flatMap(_.toIntOption)
-        .getOrElse(900)
+        .getOrElse(900),
+      maxRegistrationsPerIpPerHour = sys.env
+        .get("RATE_LIMIT_MAX_REGISTRATIONS_PER_IP_PER_HOUR")
+        .flatMap(_.toIntOption)
+        .getOrElse(10),
+      maxRegistrationsGlobalPerHour = sys.env
+        .get("RATE_LIMIT_MAX_REGISTRATIONS_GLOBAL_PER_HOUR")
+        .flatMap(_.toIntOption)
+        .getOrElse(500)
     )
   }
 }

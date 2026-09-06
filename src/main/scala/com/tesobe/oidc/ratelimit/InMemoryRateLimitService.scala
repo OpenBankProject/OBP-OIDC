@@ -20,6 +20,7 @@
 package com.tesobe.oidc.ratelimit
 
 import cats.effect.{IO, Ref}
+import cats.syntax.all._
 import org.slf4j.LoggerFactory
 import java.time.Instant
 
@@ -47,10 +48,51 @@ class InMemoryRateLimitService(
     ipAttemptsRef: Ref[IO, Map[String, List[LoginAttempt]]],
     usernameAttemptsRef: Ref[IO, Map[String, List[LoginAttempt]]],
     blockedIPsRef: Ref[IO, Map[String, BlockedEntity]],
-    blockedUsernamesRef: Ref[IO, Map[String, BlockedEntity]]
+    blockedUsernamesRef: Ref[IO, Map[String, BlockedEntity]],
+    // Registration attempt timestamps keyed by "ip:<address>", plus one "global" list.
+    registrationAttemptsRef: Ref[IO, Map[String, List[Instant]]]
 ) extends RateLimitService[IO] {
 
   private val logger = LoggerFactory.getLogger(getClass)
+
+  private val registrationWindowSeconds: Long = 3600L
+  private val registrationGlobalKey = "global"
+  private def registrationIpKey(ip: String) = s"ip:$ip"
+
+  def checkRegistrationAttempt(ip: String): IO[Either[String, Unit]] = {
+    val now = Instant.now()
+    val windowStart = now.minusSeconds(registrationWindowSeconds)
+    val ipKey = registrationIpKey(Option(ip).map(_.trim).filter(_.nonEmpty).getOrElse("unknown"))
+    val ipLimit = config.maxRegistrationsPerIpPerHour
+    val globalLimit = config.maxRegistrationsGlobalPerHour
+
+    // Prune, count and (if allowed) record in one atomic update so concurrent requests
+    // cannot slip past the cap between a read and a write.
+    registrationAttemptsRef.modify { map =>
+      val recentByIp = map.getOrElse(ipKey, Nil).filter(_.isAfter(windowStart))
+      val recentGlobal = map.getOrElse(registrationGlobalKey, Nil).filter(_.isAfter(windowStart))
+      val ipExceeded = ipLimit > 0 && recentByIp.size >= ipLimit
+      val globalExceeded = globalLimit > 0 && recentGlobal.size >= globalLimit
+      if (ipExceeded || globalExceeded) {
+        val oldest = (if (ipExceeded) recentByIp else recentGlobal).sortBy(_.toEpochMilli).headOption.getOrElse(now)
+        val retryMinutes = math.max(1L, (oldest.getEpochSecond + registrationWindowSeconds - now.getEpochSecond) / 60 + 1)
+        val message =
+          if (ipExceeded) s"Too many client registrations from this IP address (limit $ipLimit per hour). Please try again in $retryMinutes minutes."
+          else s"Too many client registrations on this server right now (limit $globalLimit per hour). Please try again in $retryMinutes minutes."
+        val pruned = map.updated(ipKey, recentByIp).updated(registrationGlobalKey, recentGlobal)
+        (pruned, Left((message, if (ipExceeded) "ip" else "global", if (ipExceeded) recentByIp.size else recentGlobal.size)))
+      } else {
+        val updated = map
+          .updated(ipKey, now :: recentByIp)
+          .updated(registrationGlobalKey, now :: recentGlobal)
+        (updated, Right(()))
+      }
+    }.flatTap {
+      case Left((_, which, count)) =>
+        IO(logger.warn(s"Rate limit: registration refused for IP $ip ($which cap reached, $count attempts in the last hour)"))
+      case Right(_) => IO.unit
+    }.map(_.left.map(_._1))
+  }
 
   def checkAndRecordFailedAttempt(
       ip: String,
@@ -174,6 +216,14 @@ class InMemoryRateLimitService(
       _ <- blockedIPsRef.update(_.filter(_._2.blockedUntil.isAfter(now)))
       _ <- blockedUsernamesRef.update(_.filter(_._2.blockedUntil.isAfter(now)))
 
+      // Clean up registration attempts older than the sliding hour
+      registrationWindowStart = now.minusSeconds(registrationWindowSeconds)
+      _ <- registrationAttemptsRef.update { map =>
+        map
+          .map { case (key, attempts) => key -> attempts.filter(_.isAfter(registrationWindowStart)) }
+          .filter(_._2.nonEmpty)
+      }
+
       _ <- IO(logger.debug("Rate limit: Cleanup completed"))
     } yield ()
   }
@@ -266,12 +316,14 @@ object InMemoryRateLimitService {
       )
       blockedIPsRef <- Ref.of[IO, Map[String, BlockedEntity]](Map.empty)
       blockedUsernamesRef <- Ref.of[IO, Map[String, BlockedEntity]](Map.empty)
+      registrationAttemptsRef <- Ref.of[IO, Map[String, List[Instant]]](Map.empty)
     } yield new InMemoryRateLimitService(
       config,
       ipAttemptsRef,
       usernameAttemptsRef,
       blockedIPsRef,
-      blockedUsernamesRef
+      blockedUsernamesRef,
+      registrationAttemptsRef
     )
   }
 }

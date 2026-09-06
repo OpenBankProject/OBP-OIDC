@@ -661,6 +661,39 @@ This OIDC provider uses three PostgreSQL database views:
 - `scopes`: Allowed access scopes (default: openid, profile, email)
 - `token_endpoint_auth_method`: Client authentication method
 
+## Dynamic Client Registration (RFC 7591)
+
+OBP-OIDC exposes an OAuth 2.0 dynamic client registration endpoint, advertised as `registration_endpoint` in the discovery document (`/obp-oidc/connect/register` by default). It is enabled by default and controlled by `ENABLE_DYNAMIC_CLIENT_REGISTRATION` (set it to `false` to turn it off).
+
+The endpoint is **unauthenticated**: it does not require an initial access token. Anyone who can reach it can register a client. When OBP-API integration is configured, each registration also creates the matching OBP Consumer, so the returned `client_id` is the OBP consumer key.
+
+### Registering and getting a token without a user
+
+This is the intended path for AI agents and other headless applications that start with no credentials at all:
+
+```bash
+# 1. Register a client (response contains client_id and client_secret; the secret is shown once)
+curl -X POST http://localhost:9000/obp-oidc/connect/register \
+  -H "Content-Type: application/json" \
+  -d '{"client_name":"my-agent","grant_types":["client_credentials"],"token_endpoint_auth_method":"client_secret_post","redirect_uris":["http://localhost/unused"]}'
+
+# 2. Get an access token with the client credentials grant
+curl -X POST http://localhost:9000/obp-oidc/token \
+  -d "grant_type=client_credentials&client_id=YOUR_CLIENT_ID&client_secret=YOUR_CLIENT_SECRET&scope=openid"
+
+# 3. Call OBP-API with it
+curl http://localhost:8080/obp/v7.0.0/consumers/current/identity -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
+```
+
+OBP-API resolves the Consumer from the token's `azp` claim and creates a User for the client on first use. That User has no entitlements, so it can use role-free endpoints such as the signal channels (see the OBP-API glossary entry "Signal Channels") but nothing that needs a Role or account access.
+
+### Operator notes
+
+- Registration attempts are rate limited in a sliding one-hour window, per IP address and in total, and a refused attempt answers 429 with `Retry-After`. Defaults are 10 per IP per hour and 500 per hour overall; set `RATE_LIMIT_MAX_REGISTRATIONS_PER_IP_PER_HOUR` and `RATE_LIMIT_MAX_REGISTRATIONS_GLOBAL_PER_HOUR` to change them (0 disables a cap). Counters are in memory, so they reset on restart and are per instance. An IP blocked for failed logins is refused as well.
+- The client address is taken from `X-Forwarded-For` (leftmost) or `X-Real-IP` when present, else the socket peer. Behind a proxy make sure the proxy sets one of these, otherwise every caller shares the proxy's counter.
+- Every registration creates a client row and, once used against OBP-API, a Consumer and a User. These do not expire.
+- Registered clients receive `openid profile email` scopes and the grant types they ask for, restricted to those the server supports.
+
 ## OBP-API Integration
 
 ### JWT Token Claims

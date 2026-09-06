@@ -62,7 +62,9 @@ class RegistrationEndpoint(
     // Extract IP for rate limiting
     val clientIp = extractClientIp(req)
 
-    // Check rate limit first
+    // Check rate limits first: an IP blocked for failed logins is refused, and every
+    // registration attempt is counted per IP and globally (sliding hour) because the
+    // endpoint is unauthenticated and each success creates a client.
     rateLimitService.isBlocked(clientIp, "registration").flatMap { blocked =>
       if (blocked) {
         logger.warn(s"Rate limit exceeded for IP: $clientIp")
@@ -73,7 +75,14 @@ class RegistrationEndpoint(
           ).asJson
         )
       } else {
-        processRegistration(req, clientIp)
+        rateLimitService.checkRegistrationAttempt(clientIp).flatMap {
+          case Left(message) =>
+            TooManyRequests(
+              ClientRegistrationError("invalid_request", Some(message)).asJson
+            ).map(_.putHeaders(Header.Raw(org.typelevel.ci.CIString("Retry-After"), "3600")))
+          case Right(_) =>
+            processRegistration(req, clientIp)
+        }
       }
     }
   }
