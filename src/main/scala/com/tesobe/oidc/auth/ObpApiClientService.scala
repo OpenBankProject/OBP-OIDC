@@ -80,7 +80,8 @@ case class ConsumerJson(
     consumer_id: String,
     app_name: String,
     consumer_key: String,
-    redirect_url: String,
+    // OBP returns null for consumers that have never had a redirect URL set
+    redirect_url: Option[String],
     enabled: Boolean,
     created: Option[String]
 )
@@ -535,7 +536,7 @@ class ObpApiClientService(
                                   client_secret = None,
                                   consumer_id = c.consumer_id,
                                   client_name = c.app_name,
-                                  redirect_uris = c.redirect_url.split("[,\\s]+").map(_.trim).filter(_.nonEmpty).toList,
+                                  redirect_uris = c.redirect_url.getOrElse("").split("[,\\s]+").map(_.trim).filter(_.nonEmpty).toList,
                                   grant_types = List("authorization_code", "refresh_token"),
                                   response_types = List("code"),
                                   scopes = List("openid", "profile", "email"),
@@ -547,7 +548,14 @@ class ObpApiClientService(
                               IO.pure(Right(clients))
                             case Left(error) =>
                               logger.error(s"Failed to parse consumers response: ${error.getMessage}. Raw body: $rawBody")
-                              IO.pure(Left(OidcError("server_error", Some(s"Failed to parse OBP API response: $rawBody"))))
+                              IO.pure(
+                                Left(
+                                  OidcError(
+                                    "server_error",
+                                    Some(s"Failed to parse OBP API response: ${error.getMessage}. Raw body: $rawBody")
+                                  )
+                                )
+                              )
                           }
                         case Left(parseError) =>
                           logger.error(s"OBP API returned non-JSON response: $rawBody")
