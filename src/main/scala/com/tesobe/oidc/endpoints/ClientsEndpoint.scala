@@ -49,7 +49,7 @@ class ClientsEndpoint(authService: HybridAuthService) {
   }
 
   private def renderClientsPage(clients: List[OidcClient]): IO[Response[IO]] = {
-    val maskedClients = clients.map(maskClientSecret)
+    val maskedClients = clients.map(maskSecrets)
     val html = generateClientsHtml(maskedClients)
     Ok(html).map(
       _.withContentType(org.http4s.headers.`Content-Type`(MediaType.text.html))
@@ -81,15 +81,20 @@ class ClientsEndpoint(authService: HybridAuthService) {
     )
   }
 
-  private def maskClientSecret(client: OidcClient): OidcClient = {
+  /** Mask a credential so only the first and last 4 characters remain visible.
+    * Values too short to reveal anything safely are replaced entirely.
+    */
+  private def maskValue(value: String): String =
+    if (value.length > 8) {
+      value.take(4) + "****" + value.takeRight(4)
+    } else {
+      "****"
+    }
+
+  private def maskSecrets(client: OidcClient): OidcClient = {
     client.copy(
-      client_secret = client.client_secret.map(secret =>
-        if (secret.length > 8) {
-          secret.take(4) + "****" + secret.takeRight(4)
-        } else {
-          "****"
-        }
-      )
+      client_id = maskValue(client.client_id),
+      client_secret = client.client_secret.map(maskValue)
     )
   }
 
@@ -169,7 +174,7 @@ class ClientsEndpoint(authService: HybridAuthService) {
        |        </div>
        |
        |        <div class="alert alert-warning">
-       |            <strong>Note:</strong> Client secrets are masked for security.
+       |            <strong>Note:</strong> Client IDs (consumer keys) and client secrets are masked for security.
        |        </div>
        |
        |        ${if (clients.isEmpty) {
@@ -214,16 +219,18 @@ class ClientsEndpoint(authService: HybridAuthService) {
       .map(scope => s"""<span class="scope">${htmlEncode(scope)}</span>""")
       .mkString(" ")
 
-    val clientSecretDisplay = client.client_secret match {
-      case Some(secret) => s"""<span class="client-secret">${htmlEncode(secret)}</span>"""
-      case None         => "<em>Not set</em>"
+    // The OBP consumers listing never returns secrets, so show a placeholder
+    // rather than implying the client has no secret configured.
+    val clientSecretDisplay = {
+      val secret = client.client_secret.getOrElse("********")
+      s"""<span class="client-secret">${htmlEncode(secret)}</span>"""
     }
 
     s"""<tr>
        |    <td><span class="consumer-id">${htmlEncode(client.consumer_id)}</span></td>
        |    <td><span class="client-name">${htmlEncode(client.client_name)}</span></td>
-       |    <td><span class="client-id">${htmlEncode(client.client_id)}</span></td>
-       |    <td>$clientSecretDisplay</td>
+       |    <td><span class="client-id" data-testid="client-id">${htmlEncode(client.client_id)}</span></td>
+       |    <td data-testid="client-secret">$clientSecretDisplay</td>
        |    <td class="redirect-uris">$redirectUrisList</td>
        |    <td class="scopes">$scopesList</td>
        |    <td>${htmlEncode(client.token_endpoint_auth_method)}</td>
