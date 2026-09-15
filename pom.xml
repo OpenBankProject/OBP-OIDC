@@ -23,7 +23,6 @@
     <scalatest.version>3.2.19</scalatest.version>
     <doobie.version>1.0.0-RC4</doobie.version>
     <postgresql.version>42.7.1</postgresql.version>
-    <mssql.version>12.4.2.jre11</mssql.version>
     <bcrypt.version>0.10.2</bcrypt.version>
     <hikaricp.version>5.1.0</hikaricp.version>
 
@@ -131,13 +130,6 @@
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
       <version>${postgresql.version}</version>
-    </dependency>
-
-    <!-- SQL Server driver -->
-    <dependency>
-      <groupId>com.microsoft.sqlserver</groupId>
-      <artifactId>mssql-jdbc</artifactId>
-      <version>${mssql.version}</version>
     </dependency>
 
     <!-- Connection pooling -->

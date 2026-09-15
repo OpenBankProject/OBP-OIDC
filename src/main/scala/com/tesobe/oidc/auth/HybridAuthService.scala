@@ -21,7 +21,7 @@ package com.tesobe.oidc.auth
 
 import cats.effect.{IO, Ref, Resource}
 import cats.implicits._
-import com.tesobe.oidc.config.{DatabaseConfig, DbVendor, ListProvidersMethod, OidcConfig, VerifyCredentialsMethod, VerifyClientMethod}
+import com.tesobe.oidc.config.{DatabaseConfig, ListProvidersMethod, OidcConfig, VerifyCredentialsMethod, VerifyClientMethod}
 import com.tesobe.oidc.models.{User, UserInfo, OidcError, OidcClient}
 import doobie._
 import doobie.hikari.HikariTransactor
@@ -1617,7 +1617,7 @@ object HybridAuthService {
         Resource.eval(IO(logger.info(
           s"   Read DB: ${config.database.username}@${config.database.host}:${config.database.port}/${config.database.database}"
         ))) *>
-        createTransactor(config.database, config.dbVendor).map(Some(_)).flatTap(_ =>
+        createTransactor(config.database).map(Some(_)).flatTap(_ =>
           Resource.eval(IO(logger.info("Read transactor created successfully")))
         )
       } else {
@@ -1628,7 +1628,7 @@ object HybridAuthService {
         Resource.eval(IO(logger.info(
           s"   Admin DB: ${config.adminDatabase.username}@${config.adminDatabase.host}:${config.adminDatabase.port}/${config.adminDatabase.database}"
         ))) *>
-        createTransactor(config.adminDatabase, config.dbVendor).map(Some(_)).flatTap(_ =>
+        createTransactor(config.adminDatabase).map(Some(_)).flatTap(_ =>
           Resource.eval(IO(logger.info("Admin transactor created successfully")))
         )
       } else {
@@ -1697,14 +1697,13 @@ object HybridAuthService {
   /** Create HikariCP transactor for database connections
     */
   private def createTransactor(
-      dbConfig: DatabaseConfig,
-      dbVendor: DbVendor
+      dbConfig: DatabaseConfig
   ): Resource[IO, HikariTransactor[IO]] = {
-    val jdbcUrl = dbVendor.jdbcUrl(dbConfig.host, dbConfig.port, dbConfig.database)
+    val jdbcUrl = s"jdbc:postgresql://${dbConfig.host}:${dbConfig.port}/${dbConfig.database}"
     logger.info(s"JDBC URL: $jdbcUrl (user: ${dbConfig.username}, password: ****)")
 
     val hikariConfig = new HikariConfig()
-    hikariConfig.setDriverClassName(dbVendor.driverClassName)
+    hikariConfig.setDriverClassName("org.postgresql.Driver")
     hikariConfig.setJdbcUrl(jdbcUrl)
     hikariConfig.setUsername(dbConfig.username)
     hikariConfig.setPassword(dbConfig.password)
@@ -1715,12 +1714,8 @@ object HybridAuthService {
     hikariConfig.setMaxLifetime(1800000) // 30 minutes
     hikariConfig.setLeakDetectionThreshold(60000) // 1 minute
 
-    dbVendor match {
-      case DbVendor.PostgreSQL =>
-        hikariConfig.addDataSourceProperty("sslmode", "prefer")
-        hikariConfig.addDataSourceProperty("tcpKeepAlive", "true")
-      case DbVendor.SQLServer => // connection properties already in JDBC URL
-    }
+    hikariConfig.addDataSourceProperty("sslmode", "prefer")
+    hikariConfig.addDataSourceProperty("tcpKeepAlive", "true")
     hikariConfig.addDataSourceProperty("ApplicationName", "OBP-OIDC-Provider")
 
     HikariTransactor.fromHikariConfig[IO](hikariConfig)
@@ -1729,7 +1724,7 @@ object HybridAuthService {
   /** Test database connection and setup
     */
   def testConnection(config: OidcConfig): IO[Either[String, String]] = {
-    createTransactor(config.database, config.dbVendor).use { xa =>
+    createTransactor(config.database).use { xa =>
       val testQuery = sql"SELECT COUNT(*) FROM v_oidc_users".query[Int]
 
       testQuery.unique
@@ -1751,7 +1746,7 @@ object HybridAuthService {
   /** Test client view access
     */
   def testClientConnection(config: OidcConfig): IO[Either[String, String]] = {
-    createTransactor(config.database, config.dbVendor).use { xa =>
+    createTransactor(config.database).use { xa =>
       val testQuery = sql"SELECT COUNT(*) FROM v_oidc_clients".query[Int]
 
       testQuery.unique
@@ -1774,7 +1769,7 @@ object HybridAuthService {
   /** Test admin database connection and v_oidc_admin_clients view access
     */
   def testAdminConnection(config: OidcConfig): IO[Either[String, String]] = {
-    createTransactor(config.adminDatabase, config.dbVendor).use { xa =>
+    createTransactor(config.adminDatabase).use { xa =>
       val testQuery = sql"SELECT COUNT(*) FROM v_oidc_admin_clients".query[Int]
 
       testQuery.unique

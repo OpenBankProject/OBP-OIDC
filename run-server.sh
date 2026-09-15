@@ -104,9 +104,9 @@ trap cleanup SIGINT SIGTERM
 # Run the server with optional TRACE logging
 if [ "$OIDC_ENABLE_TRACE_LOGGING" = "true" ]; then
     echo "TRACE logging enabled for detailed debugging"
-    java -Dlogback.logger.com.tesobe.oidc.level=TRACE -jar "$JAR_FILE" &
+    java $JAVA_OPTS -Dlogback.logger.com.tesobe.oidc.level=TRACE -jar "$JAR_FILE" &
 else
-    java -jar "$JAR_FILE" &
+    java $JAVA_OPTS -jar "$JAR_FILE" &
 fi
 
 # Store the server process ID

@@ -35,32 +35,6 @@ case class DatabaseConfig(
     maxConnections: Int = 10
 )
 
-/** Database vendor options */
-sealed trait DbVendor {
-  def driverClassName: String
-  def jdbcUrl(host: String, port: Int, database: String): String
-  def defaultPort: Int
-}
-object DbVendor {
-  case object PostgreSQL extends DbVendor {
-    val driverClassName = "org.postgresql.Driver"
-    def jdbcUrl(host: String, port: Int, database: String): String =
-      s"jdbc:postgresql://$host:$port/$database"
-    val defaultPort = 5432
-  }
-  case object SQLServer extends DbVendor {
-    val driverClassName = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
-    def jdbcUrl(host: String, port: Int, database: String): String =
-      s"jdbc:sqlserver://$host:$port;databaseName=$database;encrypt=true;trustServerCertificate=true"
-    val defaultPort = 1433
-  }
-
-  def fromString(s: String): DbVendor = s.toLowerCase match {
-    case "sqlserver" | "mssql" | "sql_server" => SQLServer
-    case _                                     => PostgreSQL // default
-  }
-}
-
 /** Credential verification method options */
 sealed trait VerifyCredentialsMethod
 object VerifyCredentialsMethod {
@@ -106,8 +80,7 @@ case class OidcConfig(
     obpApiPassword: Option[String] = None,
     obpApiConsumerKey: Option[String] = None,
     obpApiRetryMaxAttempts: Int = 60,
-    obpApiRetryDelaySeconds: Int = 30,
-    dbVendor: DbVendor = DbVendor.PostgreSQL
+    obpApiRetryDelaySeconds: Int = 30
 ) {
 
   /** Derived method settings from useVerifyEndpoints */
@@ -151,10 +124,7 @@ object Config {
       if (url.endsWith("/")) url.dropRight(1) else url
     }
 
-    val dbVendor = DbVendor.fromString(
-      sys.env.getOrElse("DB_VENDOR", "postgresql")
-    )
-    val defaultPort = dbVendor.defaultPort.toString
+    val defaultPort = "5432"
 
     val dbConfig = DatabaseConfig(
       host = sys.env.getOrElse("DB_HOST", "localhost"),
@@ -221,8 +191,7 @@ object Config {
       obpApiPassword = sys.env.get("OBP_API_PASSWORD"),
       obpApiConsumerKey = sys.env.get("OBP_API_CONSUMER_KEY"),
       obpApiRetryMaxAttempts = sys.env.getOrElse("OBP_API_RETRY_MAX_ATTEMPTS", "60").toInt,
-      obpApiRetryDelaySeconds = sys.env.getOrElse("OBP_API_RETRY_DELAY_SECONDS", "30").toInt,
-      dbVendor = dbVendor
+      obpApiRetryDelaySeconds = sys.env.getOrElse("OBP_API_RETRY_DELAY_SECONDS", "30").toInt
     )
   }
 }
