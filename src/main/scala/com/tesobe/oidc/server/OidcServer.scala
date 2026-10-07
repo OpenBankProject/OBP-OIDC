@@ -34,7 +34,7 @@ import com.tesobe.oidc.config.{Config, OidcConfig, VerifyCredentialsMethod, Veri
 import com.tesobe.oidc.endpoints._
 import com.tesobe.oidc.tokens.JwtService
 import com.tesobe.oidc.stats.StatsService
-import com.tesobe.oidc.status.StatusService
+import com.tesobe.oidc.status.{StatusReport, StatusService}
 import com.tesobe.oidc.ratelimit.{RateLimitConfig, InMemoryRateLimitService}
 import com.tesobe.oidc.revocation.InMemoryTokenRevocationService
 import org.http4s._
@@ -382,6 +382,15 @@ object OidcServer extends IOApp {
                   val modeClass =
                     if (config.localDevelopmentMode) "mode-development"
                     else "mode-production"
+                  val issuerHtml = HtmlUtils.htmlEncode(config.issuer)
+                  val wellKnownItems = StatusReport
+                    .wellKnownUrls(config.issuer)
+                    .zipWithIndex
+                    .map { case (url, i) =>
+                      val href = HtmlUtils.htmlEncode(StatusReport.localPath(url))
+                      s"""<li><a href="$href" data-testid="home-well-known-link-$i">${HtmlUtils.htmlEncode(url)}</a></li>"""
+                    }
+                    .mkString("\n")
                   Ok(s"""<!DOCTYPE html>
                      |<html>
                      |<head>
@@ -424,6 +433,29 @@ object OidcServer extends IOApp {
                      |      transform: translateY(-2px);
                      |      box-shadow: 0 4px 12px rgba(38, 166, 154, 0.3);
                      |    }
+                     |    .discovery {
+                     |      text-align: left;
+                     |      background: #e8f5e9;
+                     |      border-left: 4px solid #4caf50;
+                     |      border-radius: 6px;
+                     |      padding: 15px 20px;
+                     |      margin: 0 0 25px 0;
+                     |    }
+                     |    .discovery h2 { font-size: 1.1rem; margin: 0 0 10px 0; }
+                     |    .discovery .issuer {
+                     |      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                     |      font-size: 1.05rem;
+                     |      word-break: break-all;
+                     |      margin: 0 0 12px 0;
+                     |    }
+                     |    .discovery .well-known-label { font-size: 0.85rem; }
+                     |    .discovery ul { margin: 4px 0 0 0; padding-left: 18px; overflow-x: auto; }
+                     |    .discovery li {
+                     |      margin: 2px 0;
+                     |      white-space: nowrap;
+                     |      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                     |      font-size: 0.72rem;
+                     |    }
                      |    @media (max-width: 600px) {
                      |      .container {
                      |        padding: 30px 20px;
@@ -438,6 +470,14 @@ object OidcServer extends IOApp {
                      |  <div class="container">
                      |    <h1>OBP OIDC Provider</h1>
                      |    <p class="subtitle">OpenID Connect Authentication Server</p>
+                     |    <section class="discovery" data-testid="home-discovery" aria-labelledby="home-issuer-heading">
+                     |      <h2 id="home-issuer-heading">OIDC Issuer</h2>
+                     |      <p class="issuer" data-testid="home-issuer">$issuerHtml</p>
+                     |      <strong class="well-known-label">Well-known discovery URLs:</strong>
+                     |      <ul data-testid="home-well-known-urls">
+                     |$wellKnownItems
+                     |      </ul>
+                     |    </section>
                      |    <div class="mode-indicator $modeClass">$modeStatus</div>
                      |    <div class="links">
                      |      <a href="/info">Server Info</a>

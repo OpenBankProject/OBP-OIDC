@@ -50,10 +50,47 @@ case class StatusReport(
     generatedAt: Instant,
     credentialVerificationMethod: String,
     clientVerificationMethod: String,
-    dynamicClientRegistrationEnabled: Boolean
+    dynamicClientRegistrationEnabled: Boolean,
+    issuer: String
 )
 
 object StatusReport {
+
+  /** Discovery URLs served by DiscoveryEndpoint, derived from the issuer.
+    * Includes both the OIDC form (well-known appended to the issuer path) and
+    * the RFC 8414 form (well-known inserted between host and issuer path).
+    */
+  def wellKnownUrls(issuer: String): List[String] = {
+    val base = issuer.stripSuffix("/")
+    val appended = List(
+      s"$base/.well-known/openid-configuration",
+      s"$base/.well-known/oauth-authorization-server"
+    )
+    val inserted =
+      scala.util
+        .Try(new java.net.URI(base))
+        .toOption
+        .filter(u => u.getScheme != null && u.getRawAuthority != null)
+        .map { u =>
+          val origin = s"${u.getScheme}://${u.getRawAuthority}"
+          val path = Option(u.getRawPath).getOrElse("")
+          List(
+            s"$origin/.well-known/oauth-authorization-server$path",
+            s"$origin/.well-known/openid-configuration$path"
+          )
+        }
+        .getOrElse(Nil)
+    appended ++ inserted
+  }
+
+  /** Path portion of a URL, used to link to this server's own discovery
+    * routes even when the issuer host differs from the host serving the page
+    * (e.g. behind a proxy).
+    */
+  def localPath(url: String): String =
+    scala.util
+      .Try(Option(new java.net.URI(url).getRawPath).getOrElse(url))
+      .getOrElse(url)
 
   def credentialMethodLabel(m: VerifyCredentialsMethod): String = m match {
     case VerifyCredentialsMethod.ViaApiEndpoint    => "OBP API endpoint"
@@ -86,6 +123,10 @@ object StatusReport {
     ),
     "dynamic_client_registration_enabled" -> Json.fromBoolean(
       report.dynamicClientRegistrationEnabled
+    ),
+    "issuer" -> Json.fromString(report.issuer),
+    "well_known_urls" -> Json.arr(
+      wellKnownUrls(report.issuer).map(Json.fromString): _*
     ),
     "checks" -> Json.arr(
       report.checks.map { c =>
@@ -182,7 +223,8 @@ class StatusService(
         StatusReport.credentialMethodLabel(config.verifyCredentialsMethod),
       clientVerificationMethod =
         StatusReport.clientMethodLabel(config.verifyClientMethod),
-      dynamicClientRegistrationEnabled = config.enableDynamicClientRegistration
+      dynamicClientRegistrationEnabled = config.enableDynamicClientRegistration,
+      issuer = config.issuer
     )
   }
 

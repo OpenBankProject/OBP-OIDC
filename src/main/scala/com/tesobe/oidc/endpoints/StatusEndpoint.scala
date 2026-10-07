@@ -83,6 +83,15 @@ class StatusEndpoint(statusService: StatusService) {
     val clientMethod = htmlEncode(report.clientVerificationMethod)
     val dcrStatus = if (report.dynamicClientRegistrationEnabled) "Enabled" else "Disabled"
     val version = htmlEncode(com.tesobe.oidc.BuildVersion.version)
+    val issuer = htmlEncode(report.issuer)
+    val wellKnownItems = StatusReport
+      .wellKnownUrls(report.issuer)
+      .zipWithIndex
+      .map { case (url, i) =>
+        val href = StatusReport.localPath(url)
+        s"""<li><a href="${htmlEncode(href)}" class="config-value" data-testid="status-well-known-link-$i">${htmlEncode(url)}</a></li>"""
+      }
+      .mkString("\n")
 
     s"""<!DOCTYPE html>
        |<html>
@@ -135,6 +144,8 @@ class StatusEndpoint(statusService: StatusService) {
        |    .config-line { margin: 4px 0; }
        |    .config-label { font-weight: 600; color: #1f2937; margin-right: 6px; }
        |    .config-value { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+       |    .well-known-list { margin: 4px 0 0 0; padding-left: 20px; }
+       |    .well-known-list li { margin: 2px 0; word-break: break-all; }
        |    tr.detail-row td { padding: 0 16px 12px 16px; border-bottom: 1px solid #e9ecef; }
        |    .detail-box {
        |      background: #fff7f7;
@@ -182,6 +193,16 @@ class StatusEndpoint(statusService: StatusService) {
        |      <div class="config-line">
        |        <span class="config-label">Dynamic Client Registration:</span>
        |        <span class="config-value" data-testid="status-dcr">$dcrStatus</span>
+       |      </div>
+       |      <div class="config-line">
+       |        <span class="config-label">Issuer:</span>
+       |        <span class="config-value" data-testid="status-issuer">$issuer</span>
+       |      </div>
+       |      <div class="config-line">
+       |        <span class="config-label">Well-known discovery URLs:</span>
+       |        <ul class="well-known-list" data-testid="status-well-known-urls">
+       |$wellKnownItems
+       |        </ul>
        |      </div>
        |    </div>
        |    <table class="status" data-testid="status-table">

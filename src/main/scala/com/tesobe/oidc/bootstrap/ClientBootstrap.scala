@@ -384,14 +384,14 @@ class ClientBootstrap(authService: HybridAuthService, config: OidcConfig) {
           s"   Client not found - creating new client: ${clientConfig.client_name} (${clientConfig.client_id})"
         )
         authService.createClient(clientConfig).flatMap {
-          case Right(_) =>
+          case Right(createdClient) =>
             println(
               s"   DEBUG: Successfully created client: ${clientConfig.client_name}"
             )
             logger.info(
               s"   Successfully created client: ${clientConfig.client_name}"
             )
-            IO.unit
+            printNewClientCredentials(createdClient)
           case Left(error) =>
             println(
               s"   DEBUG: Failed to create client ${clientConfig.client_name}: ${error.error} - ${error.error_description
@@ -406,6 +406,26 @@ class ClientBootstrap(authService: HybridAuthService, config: OidcConfig) {
             )
             IO.unit
         }
+    }
+  }
+
+  /** Print credentials of a newly created client. In API mode OBP-API
+    * generates the key and secret, and they cannot be retrieved later, so this
+    * is the one chance to see them.
+    */
+  private def printNewClientCredentials(client: OidcClient): IO[Unit] = {
+    IO {
+      println()
+      println("=" * 80)
+      println(s"NEW CLIENT CREATED: ${client.client_name}")
+      println("Save these credentials now - the secret will not be shown again.")
+      println("-" * 80)
+      println(s"CONSUMER_ID: ${client.consumer_id}")
+      println(s"CLIENT_ID (KEY): ${client.client_id}")
+      println(s"CLIENT_SECRET: ${client.client_secret.getOrElse("Not returned")}")
+      println(s"REDIRECT_URIS: ${client.redirect_uris.mkString(",")}")
+      println("=" * 80)
+      println()
     }
   }
 
