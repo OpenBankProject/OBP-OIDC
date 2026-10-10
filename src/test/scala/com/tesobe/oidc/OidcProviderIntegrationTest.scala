@@ -60,6 +60,7 @@ class OidcProviderIntegrationTest extends AnyFlatSpec with Matchers {
       rateLimitService <- InMemoryRateLimitService(rateLimitConfig)
 
       consentChallengesRef <- Ref.of[IO, Map[String, ConsentChallenge]](Map.empty)
+      pendingAuthorizationsRef <- Ref.of[IO, Map[String, PendingAuthorization]](Map.empty)
       discoveryEndpoint = DiscoveryEndpoint(testConfig)
       jwksEndpoint = JwksEndpoint(jwtService)
       authEndpoint = AuthEndpoint(
@@ -69,7 +70,8 @@ class OidcProviderIntegrationTest extends AnyFlatSpec with Matchers {
         rateLimitService,
         testConfig,
         jwtService,
-        consentChallengesRef
+        consentChallengesRef,
+        pendingAuthorizationsRef
       )
       tokenEndpoint = TokenEndpoint(
         authService,
@@ -207,11 +209,10 @@ class OidcProviderIntegrationTest extends AnyFlatSpec with Matchers {
       response.contentType.map(_.mediaType) should be(Some(MediaType.text.html))
 
       body should include("Sign In")
-      body should include("test-client")
-      body should include("openid profile email")
-      body should include("Sign In")
-      body should include("test-client")
-      body should include("openid profile email")
+      body should include("Test Client is asking you to login")
+      // The form carries only the id of the request kept on the server, not the client or redirect_uri
+      body should include("name=\"auth_request_id\"")
+      body should not include "name=\"redirect_uri\""
     }
 
     test.unsafeRunSync()
@@ -292,21 +293,35 @@ class OidcProviderIntegrationTest extends AnyFlatSpec with Matchers {
     val test = for {
       app <- createTestApp
 
-      // Step 1: Login with valid credentials
+      // Step 1: Open the login form; the validated request is kept on the server
+      authorizeRequest = Request[IO](
+        Method.GET,
+        uri"/obp-oidc/auth"
+          .withQueryParam("response_type", "code")
+          .withQueryParam("client_id", clientId)
+          .withQueryParam("redirect_uri", redirectUri)
+          .withQueryParam("scope", scope)
+          .withQueryParam("state", state)
+          .withQueryParam("nonce", nonce)
+      )
+      formResponse <- app(authorizeRequest)
+      formBody <- formResponse.as[String]
+      authRequestId = "name=\"auth_request_id\" value=\"([^\"]+)\"".r
+        .findFirstMatchIn(formBody).map(_.group(1)).getOrElse(fail("no auth_request_id in the login form"))
+      bindingCookie = formResponse.cookies.find(_.name == s"obp_oidc_auth_$authRequestId")
+        .getOrElse(fail("no binding cookie on the login form"))
+
+      // Step 2: Login with valid credentials
       loginForm = UrlForm(
         "username" -> "alice123",
         "password" -> "secret123456",
         "provider" -> "obp-test",
-        "client_id" -> clientId,
-        "redirect_uri" -> redirectUri,
-        "scope" -> scope,
-        "state" -> state,
-        "nonce" -> nonce
+        "auth_request_id" -> authRequestId
       )
 
-      loginRequest = Request[IO](Method.POST, uri"/obp-oidc/auth").withEntity(
-        loginForm
-      )
+      loginRequest = Request[IO](Method.POST, uri"/obp-oidc/auth")
+        .withEntity(loginForm)
+        .addCookie(bindingCookie.name, bindingCookie.content)
       loginResponse <- app(loginRequest)
       location = loginResponse.headers
         .get(CIString("Location"))
@@ -323,7 +338,7 @@ class OidcProviderIntegrationTest extends AnyFlatSpec with Matchers {
       _ = stateParam should be(Some(state))
       code = codeParam.get
 
-      // Step 2: Exchange code for tokens
+      // Step 3: Exchange code for tokens
       tokenForm = UrlForm(
         "grant_type" -> "authorization_code",
         "code" -> code,
@@ -345,7 +360,7 @@ class OidcProviderIntegrationTest extends AnyFlatSpec with Matchers {
         throw new Exception("Failed to decode token response")
       )
 
-      // Step 3: Use access token to get user info
+      // Step 4: Use access token to get user info
       userInfoRequest = Request[IO](Method.GET, uri"/obp-oidc/userinfo")
         .putHeaders(
           Header.Raw(

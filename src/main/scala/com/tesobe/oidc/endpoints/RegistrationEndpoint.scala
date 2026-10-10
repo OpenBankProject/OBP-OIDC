@@ -21,7 +21,7 @@ package com.tesobe.oidc.endpoints
 
 import cats.effect.IO
 import cats.syntax.all._
-import com.tesobe.oidc.auth.HybridAuthService
+import com.tesobe.oidc.auth.{HybridAuthService, RedirectUriRules}
 import com.tesobe.oidc.config.OidcConfig
 import com.tesobe.oidc.models._
 import com.tesobe.oidc.ratelimit.RateLimitService
@@ -296,72 +296,17 @@ class RegistrationEndpoint(
   /** Validate a redirect URI per RFC 7591 / OAuth 2.1 security best practices */
   private def validateRedirectUri(
       uri: String
-  ): Either[ClientRegistrationError, String] = {
-    Try(new java.net.URI(uri)).toEither match {
-      case Left(_) =>
+  ): Either[ClientRegistrationError, String] =
+    RedirectUriRules.problemWith(uri) match {
+      case Some(problem) =>
         Left(
           ClientRegistrationError(
             ClientRegistrationError.INVALID_REDIRECT_URI,
-            Some(s"Invalid redirect_uri format: $uri")
+            Some(s"Invalid redirect_uri $uri: $problem")
           )
         )
-
-      case Right(parsedUri) =>
-        val scheme = Option(parsedUri.getScheme).map(_.toLowerCase)
-
-        // Must have a scheme
-        if (scheme.isEmpty) {
-          return Left(
-            ClientRegistrationError(
-              ClientRegistrationError.INVALID_REDIRECT_URI,
-              Some(s"redirect_uri must have a scheme: $uri")
-            )
-          )
-        }
-
-        // Allow http, https, and custom schemes (for native apps)
-        // But reject javascript: and data: schemes
-        val dangerousSchemes = Set("javascript", "data", "vbscript")
-        if (dangerousSchemes.contains(scheme.get)) {
-          return Left(
-            ClientRegistrationError(
-              ClientRegistrationError.INVALID_REDIRECT_URI,
-              Some(s"Dangerous redirect_uri scheme not allowed: ${scheme.get}")
-            )
-          )
-        }
-
-        // For http(s) URIs, must be absolute (have a host)
-        if (scheme.contains("http") || scheme.contains("https")) {
-          if (Option(parsedUri.getHost).isEmpty) {
-            return Left(
-              ClientRegistrationError(
-                ClientRegistrationError.INVALID_REDIRECT_URI,
-                Some(s"HTTP(S) redirect_uri must have a host: $uri")
-              )
-            )
-          }
-
-          // Warn about localhost in non-development mode (but still allow it)
-          val host = parsedUri.getHost.toLowerCase
-          if (!config.localDevelopmentMode && (host == "localhost" || host == "127.0.0.1")) {
-            logger.warn(s"Localhost redirect_uri registered in non-development mode: $uri")
-          }
-        }
-
-        // No fragment allowed in redirect_uri (OAuth 2.1 requirement)
-        if (Option(parsedUri.getFragment).isDefined) {
-          return Left(
-            ClientRegistrationError(
-              ClientRegistrationError.INVALID_REDIRECT_URI,
-              Some(s"redirect_uri must not contain a fragment: $uri")
-            )
-          )
-        }
-
-        Right(uri)
+      case None => Right(uri)
     }
-  }
 
   /** Check if a URL is a valid HTTP/HTTPS URL */
   private def isValidHttpUrl(url: String): Boolean = {

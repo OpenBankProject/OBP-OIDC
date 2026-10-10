@@ -20,9 +20,9 @@
 package com.tesobe.oidc.endpoints
 
 import cats.effect.{IO, Ref}
-import com.tesobe.oidc.auth.{AuthService, CodeService}
+import com.tesobe.oidc.auth.{AuthService, CodeService, RedirectUriRules}
 import com.tesobe.oidc.endpoints.HtmlUtils.htmlEncode
-import com.tesobe.oidc.models.{ConsentChallenge, OidcError, User}
+import com.tesobe.oidc.models.{ConsentChallenge, ObpConsent, OidcError, PendingAuthorization, User}
 import com.tesobe.oidc.ratelimit.RateLimitService
 import com.tesobe.oidc.config.OidcConfig
 import com.tesobe.oidc.tokens.JwtService
@@ -42,10 +42,20 @@ class AuthEndpoint(
     rateLimitService: RateLimitService[IO],
     config: OidcConfig,
     jwtService: JwtService[IO],
-    consentChallengesRef: Ref[IO, Map[String, ConsentChallenge]]
+    consentChallengesRef: Ref[IO, Map[String, ConsentChallenge]],
+    pendingAuthorizationsRef: Ref[IO, Map[String, PendingAuthorization]]
 ) {
 
   private val logger = LoggerFactory.getLogger(getClass)
+
+  // Consent statuses OBP-API uses for a consent the user has approved: ACCEPTED (OBP),
+  // AUTHORISED (UK Open Banking) and valid (Berlin Group).
+  private val approvedConsentStatuses = Set("ACCEPTED", "AUTHORISED", "VALID")
+
+  private def isApprovedConsentStatus(status: String): Boolean =
+    approvedConsentStatuses.contains(status.toUpperCase)
+
+  private val authRequestCookiePrefix = "obp_oidc_auth_"
 
   // Test logging immediately when class is created
   logger.info("AuthEndpoint created - logging is working!")
@@ -91,9 +101,8 @@ class AuthEndpoint(
         ChallengeQueryParamMatcher(challengeId) +&
         ConsentIdCallbackQueryParamMatcher(consentId) +&
         ConsentStatusQueryParamMatcher(consentStatus) +&
-        UsernameCallbackQueryParamMatcher(username) +&
-        ProviderCallbackQueryParamMatcher(provider) =>
-      handleConsentCallback(challengeId, consentId, consentStatus, username, provider)
+        UsernameCallbackQueryParamMatcher(username) =>
+      handleConsentCallback(challengeId, consentId, consentStatus, username)
   }
 
   // Query parameter matchers
@@ -125,8 +134,6 @@ class AuthEndpoint(
       extends QueryParamDecoderMatcher[String]("consent_status")
   object UsernameCallbackQueryParamMatcher
       extends OptionalQueryParamDecoderMatcher[String]("username")
-  object ProviderCallbackQueryParamMatcher
-      extends OptionalQueryParamDecoderMatcher[String]("provider")
 
   private def handleAuthorizationRequest(
       responseType: String,
@@ -150,56 +157,30 @@ class AuthEndpoint(
           s"handleAuthorizationRequest called - responseType: $responseType, clientId: $clientId, redirectUri: $redirectUri, scope: $scope"
         )
       ) *>
-      // Validate request parameters
-      (if (responseType != "code" && responseType != "code id_token") {
-         IO(logger.warn(s"Unsupported response_type: $responseType")) *>
-           IO(println(s"Unsupported response_type: $responseType")) *> {
-             val error = OidcError(
-               "unsupported_response_type",
-               Some("Supported response types: 'code', 'code id_token'"),
-               state = state
-             )
-             redirectWithError(redirectUri, error)
-           }
-       } else if (!scope.contains("openid")) {
-         IO(logger.warn(s"Missing 'openid' scope: $scope")) *>
-           IO(println(s"Missing 'openid' scope: $scope")) *> {
-             val error = OidcError(
-               "invalid_scope",
-               Some("'openid' scope is required"),
-               state = state
-             )
-             redirectWithError(redirectUri, error)
-           }
-       } else {
-         // Validate client and redirect URI
-         IO(
-           logger.info(s"Response type and scope valid, validating client...")
-         ) *>
-           IO(
-             println(s"Response type and scope valid, validating client...")
-           ) *>
-           authService.validateClient(clientId, redirectUri).flatMap {
-             isValid =>
-               if (!isValid) {
-                 IO(
-                   logger.warn(
-                     s"Client validation failed for clientId: $clientId, redirectUri: $redirectUri"
-                   )
-                 ) *>
-                   IO(
-                     println(
-                       s"Client validation failed for clientId: $clientId, redirectUri: $redirectUri"
-                     )
-                   ) *> {
-                     val error = OidcError(
-                       "invalid_client",
-                       Some("Invalid client_id or redirect_uri"),
-                       state = state
-                     )
-                     redirectWithError(redirectUri, error)
-                   }
-               } else {
+      // Validate the client and redirect URI before anything else. Until both are known to be
+      // registered, redirect_uri is untrusted input: an error must be shown here, never sent to it
+      // (RFC 6749 section 4.1.2.1), or this endpoint becomes an open redirect.
+      validateClientAndRedirectUri(clientId, redirectUri).flatMap { isValid =>
+        if (!isValid) {
+          IO(logger.warn(s"Client validation failed for clientId: $clientId, redirectUri: $redirectUri")) *>
+            showErrorPage(
+              Status.BadRequest,
+              "Invalid client",
+              "The client_id is not known, or the redirect_uri is not registered for it."
+            )
+        } else if (responseType != "code" && responseType != "code id_token") {
+          IO(logger.warn(s"Unsupported response_type: $responseType")) *>
+            redirectWithError(
+              redirectUri,
+              OidcError("unsupported_response_type", Some("Supported response types: 'code', 'code id_token'"), state = state)
+            )
+        } else if (!scope.contains("openid")) {
+          IO(logger.warn(s"Missing 'openid' scope: $scope")) *>
+            redirectWithError(
+              redirectUri,
+              OidcError("invalid_scope", Some("'openid' scope is required"), state = state)
+            )
+        } else {
                  (consentRequestId, consentId) match {
                    case (Some(crId), _) =>
                      // OBP consent-request flow: skip login form, redirect straight to Portal.
@@ -214,15 +195,58 @@ class AuthEndpoint(
                      IO(logger.info(s"Client validated, UK consent_id present ($cid) — redirecting to Portal for UK consent approval...")) *>
                        redirectToPortalForUKConsent(clientId, redirectUri, scope, state, nonce, responseType, cid, bankId.getOrElse(""))
                    case _ =>
-                     // Normal flow: show login form
+                     // Normal flow: keep the validated request on the server and show the login form
                      IO(logger.info(s"Client validated, showing login form...")) *>
-                       IO(println(s"Client validated, showing login form...")) *>
-                       showLoginForm(clientId, redirectUri, scope, state, nonce, responseType = responseType, consentId = consentId)
+                       storePendingAuthorization(clientId, redirectUri, scope, state, nonce, responseType, consentId)
+                         .flatMap(pending => showLoginForm(pending))
                  }
-               }
-           }
-       })
+        }
+      }
   }
+
+  /** Keep a validated authorization request on the server while the user fills in the login form.
+    * Expired requests are dropped on the way.
+    */
+  private def storePendingAuthorization(
+      clientId: String,
+      redirectUri: String,
+      scope: String,
+      state: Option[String],
+      nonce: Option[String],
+      responseType: String,
+      consentId: Option[String]
+  ): IO[PendingAuthorization] =
+    for {
+      id <- IO(UUID.randomUUID().toString)
+      bindingToken <- IO(UUID.randomUUID().toString)
+      now = Instant.now().getEpochSecond
+      pending = PendingAuthorization(
+        id = id,
+        bindingToken = bindingToken,
+        clientId = clientId,
+        redirectUri = redirectUri,
+        scope = scope,
+        state = state,
+        nonce = nonce,
+        responseType = responseType,
+        consentId = consentId,
+        exp = now + config.codeExpirationSeconds
+      )
+      _ <- pendingAuthorizationsRef.update(all => all.filter(_._2.exp >= now) + (id -> pending))
+    } yield pending
+
+  /** The pending request named by the form's auth_request_id, if it exists, has not expired and the
+    * browser sent back its binding cookie (a form posted from another site arrives without it).
+    */
+  private def findPendingAuthorization(
+      authRequestId: String,
+      requestOpt: Option[Request[IO]]
+  ): IO[Option[PendingAuthorization]] =
+    pendingAuthorizationsRef.get.map { all =>
+      val now = Instant.now().getEpochSecond
+      val cookieValue = requestOpt.flatMap(_.cookies.find(_.name == authRequestCookiePrefix + authRequestId)).map(_.content)
+      all.get(authRequestId).filter(p => p.exp >= now && cookieValue.contains(p.bindingToken))
+    }
 
   private def validateAuthInput(
       username: String,
@@ -312,67 +336,48 @@ class AuthEndpoint(
       validPassword = validatedInput._2
       validProvider = validatedInput._3
 
-      clientId <- IO.fromOption(formData.get("client_id"))(
-        new RuntimeException("Missing client_id")
-      )
-      redirectUri <- IO.fromOption(formData.get("redirect_uri"))(
-        new RuntimeException("Missing redirect_uri")
-      )
-      scope <- IO.fromOption(formData.get("scope"))(
-        new RuntimeException("Missing scope")
-      )
-      state = formData.get("state")
-      nonce = formData.get("nonce")
-      responseType = formData.get("response_type").getOrElse("code")
-      consentId = formData.get("consent_id")
+      // The client, redirect_uri, scope, state, nonce and response_type come from the request that
+      // GET /auth validated and stored, never from the posted form, which anyone can forge.
+      pendingOpt <- formData.get("auth_request_id").filter(_.nonEmpty) match {
+        case Some(authRequestId) => findPendingAuthorization(authRequestId, requestOpt)
+        case None if config.localDevelopmentMode => pendingFromStandaloneTestForm(formData)
+        case None => IO.pure(None)
+      }
 
-      _ <- IO(
-        logger.info(
-          s"Calling authentication service for username: '$validUsername' with provider: '$validProvider'"
-        )
-      )
-
-      // Perform authentication
-      authResult <- authService.authenticate(
-        validUsername,
-        validPassword,
-        validProvider
-      )
-
-      response <- authResult match {
-        case Right(user) =>
-          // Authentication successful - clear rate limit tracking
-          rateLimitService.recordSuccessfulLogin(ip, validUsername) *>
-            IO(
-              logger.info(s"Authentication successful for user: ${user.sub}")
-            ) *>
-            generateCodeForUser(
-              user, clientId, redirectUri, scope, state, nonce,
-              responseType, consentId = consentId
+      response <- pendingOpt match {
+        case None =>
+          IO(logger.warn("Login form submitted without a valid pending authorization request")) *>
+            showErrorPage(
+              Status.BadRequest,
+              "Sign-in expired",
+              "This sign-in form has expired or was not opened by this server. Go back to the application and sign in again."
             )
-        case Left(error) =>
-          // Authentication failed - record failed attempt for rate limiting
-          rateLimitService.checkAndRecordFailedAttempt(ip, validUsername) *>
-            IO(
-              logger.warn(
-                s"Authentication failed for username: '$validUsername', provider: '$validProvider', error: ${error.error}, description: ${error.error_description.getOrElse("none")}"
-              )
-            ) *>
-            IO(
-              println(
-                s"Authentication failed for username: '$validUsername', provider: '$validProvider', error: ${error.error}, description: ${error.error_description.getOrElse("none")}"
-              )
-            ) *>
-            showLoginForm(
-              clientId,
-              redirectUri,
-              scope,
-              state,
-              nonce,
-              Some("Incorrect username/password"),
-              responseType,
-              consentId
-            )
+
+        case Some(pending) =>
+          for {
+            _ <- IO(logger.info(s"Calling authentication service for username: '$validUsername' with provider: '$validProvider'"))
+            authResult <- authService.authenticate(validUsername, validPassword, validProvider)
+            response <- authResult match {
+              case Right(user) =>
+                // Authentication successful - clear rate limit tracking; the pending request is used up
+                rateLimitService.recordSuccessfulLogin(ip, validUsername) *>
+                  pendingAuthorizationsRef.update(_ - pending.id) *>
+                  IO(logger.info(s"Authentication successful for user: ${user.sub}")) *>
+                  generateCodeForUser(
+                    user, pending.clientId, pending.redirectUri, pending.scope, pending.state, pending.nonce,
+                    pending.responseType, consentId = pending.consentId
+                  )
+              case Left(error) =>
+                // Authentication failed - record failed attempt for rate limiting, show the same request again
+                rateLimitService.checkAndRecordFailedAttempt(ip, validUsername) *>
+                  IO(
+                    logger.warn(
+                      s"Authentication failed for username: '$validUsername', provider: '$validProvider', error: ${error.error}, description: ${error.error_description.getOrElse("none")}"
+                    )
+                  ) *>
+                  showLoginForm(pending, Some("Incorrect username/password"))
+            }
+          } yield response
       }
     } yield response
   }.handleErrorWith { error =>
@@ -382,6 +387,29 @@ class AuthEndpoint(
     )
     BadRequest("Invalid form data. Please try again.")
   }
+
+  /** The standalone test page (/obp-oidc/test-login, local development mode only) posts the client
+    * and redirect_uri itself rather than going through GET /auth. They are validated here exactly as
+    * GET /auth would, so even in development a code is only ever issued for a registered redirect_uri.
+    */
+  private def pendingFromStandaloneTestForm(formData: Map[String, String]): IO[Option[PendingAuthorization]] =
+    (formData.get("client_id"), formData.get("redirect_uri"), formData.get("scope")) match {
+      case (Some(clientId), Some(redirectUri), Some(scope)) =>
+        validateClientAndRedirectUri(clientId, redirectUri).flatMap {
+          case true =>
+            storePendingAuthorization(
+              clientId,
+              redirectUri,
+              scope,
+              formData.get("state").filter(_.nonEmpty),
+              formData.get("nonce").filter(_.nonEmpty),
+              formData.get("response_type").getOrElse("code"),
+              consentId = None
+            ).map(Some(_))
+          case false => IO.pure(None)
+        }
+      case _ => IO.pure(None)
+    }
 
   /** Store authorization state and redirect to Portal for consent approval.
     * No user authentication happens here — the user will authenticate on Portal.
@@ -408,7 +436,8 @@ class AuthEndpoint(
         state = state,
         nonce = nonce,
         responseType = responseType,
-        consentRequestId = consentRequestId,
+        consentRequestId = Some(consentRequestId),
+        consentId = None,
         bankId = bankId,
         exp = exp
       )
@@ -462,7 +491,8 @@ class AuthEndpoint(
         state = state,
         nonce = nonce,
         responseType = responseType,
-        consentRequestId = consentId, // reused to carry the UK consent_id (not read back on callback)
+        consentRequestId = None,
+        consentId = Some(consentId),
         bankId = bankId,
         exp = exp
       )
@@ -487,22 +517,24 @@ class AuthEndpoint(
 
   /** Handle the consent callback from Portal after user approves/denies consent.
     *
-    * Two completion modes, chosen by whether Portal identifies the user:
-    *  - `username` + `provider` present and resolvable: standard OIDC completion —
-    *    mint an authorization code for the original client (bound to the consent_id),
-    *    so the client's token exchange yields JWTs carrying the `consent_id` claim
-    *    that resource servers (OBP-API) validate against. Resolution goes through
-    *    the OBP-API REST endpoint (users/provider/PROVIDER/username/USERNAME).
-    *  - no `username` (legacy, e.g. Hola): redirect back to the client with
-    *    `consent_status=ACCEPTED&consent_id=...` only — the client then uses
-    *    Consent-Id + Consumer-Key headers against OBP-API, no OAuth code minted.
+    * Everything on this URL comes through the browser, so none of it is trusted to decide who the code
+    * is for. A consent_status other than an approved one ends the flow with access_denied. Otherwise the
+    * consent is read from OBP-API and checked against the challenge (see verifyConsent); the user the
+    * code is issued for is the consent's own user, never a username or provider on the URL.
+    *
+    * Two completion modes, chosen by whether Portal sends a `username` parameter (its value is ignored):
+    *  - present: standard OIDC completion — mint an authorization code for the original client, bound
+    *    to the consent_id, so the token exchange yields JWTs carrying the `consent_id` claim that OBP-API
+    *    validates.
+    *  - absent (legacy, e.g. Hola): redirect back to the client with `consent_status=ACCEPTED&consent_id=...`
+    *    only — the client then uses Consent-Id + Consumer-Key headers against OBP-API, no OAuth code minted.
+    *    The consent is verified first in this mode too.
     */
   private def handleConsentCallback(
       challengeId: String,
-      consentId: Option[String],
+      consentIdParam: Option[String],
       consentStatus: String,
-      username: Option[String],
-      provider: Option[String]
+      usernameParam: Option[String]
   ): IO[Response[IO]] = {
     for {
       challenges <- consentChallengesRef.get
@@ -510,44 +542,44 @@ class AuthEndpoint(
         case Some(challenge) =>
           // Consume the challenge (one-time use)
           consentChallengesRef.update(_ - challengeId) *> {
-            // Check expiration
             val now = Instant.now().getEpochSecond
             if (challenge.exp < now) {
-              IO(logger.warn(s"Consent challenge expired: $challengeId")) *> {
-                val error = OidcError("access_denied", Some("Consent challenge expired"), state = challenge.state)
-                redirectWithError(challenge.redirectUri, error)
-              }
-            } else if (consentStatus == "ACCEPTED" || consentStatus == "VALID") {
-              IO(logger.info(s"Consent approved for challenge: $challengeId, consent_id: $consentId, username: ${username.getOrElse("none")}, provider: ${provider.getOrElse("none")}")) *>
-                resolveCallbackUser(username, provider).flatMap {
-                  case Some(user) =>
-                    // Standard OIDC completion: issue an authorization code for the
-                    // original client; the consent binding travels inside the code and
-                    // ends up as a consent_id claim in the access/ID/refresh tokens.
-                    IO(logger.info(s"Resolved consent user '${user.sub}' — issuing authorization code for client ${challenge.clientId}")) *>
-                      generateCodeForUser(
-                        user,
-                        challenge.clientId,
-                        challenge.redirectUri,
-                        challenge.scope,
-                        challenge.state,
-                        challenge.nonce,
-                        challenge.responseType,
-                        consentId
-                      )
-                  case None =>
-                    // Legacy completion (no resolvable user): hand the consent_id back
-                    // directly — client accesses OBP-API with Consent-Id + Consumer-Key headers.
-                    val consentIdParam = consentId.map(c => s"&consent_id=${java.net.URLEncoder.encode(c, "UTF-8")}").getOrElse("")
-                    val stateParam = challenge.state.map(s => s"&state=${java.net.URLEncoder.encode(s, "UTF-8")}").getOrElse("")
-                    val location = s"${challenge.redirectUri}?consent_status=ACCEPTED${consentIdParam}${stateParam}"
-                    IO(logger.info(s"No resolvable user in consent callback — legacy redirect with consent_id: $location")) *>
-                      SeeOther(Location(Uri.unsafeFromString(location)))
-                }
+              IO(logger.warn(s"Consent challenge expired: $challengeId")) *>
+                redirectWithError(challenge.redirectUri, OidcError("access_denied", Some("Consent challenge expired"), state = challenge.state))
+            } else if (!isApprovedConsentStatus(consentStatus)) {
+              IO(logger.info(s"Consent denied for challenge: $challengeId, status: $consentStatus")) *>
+                redirectWithError(challenge.redirectUri, OidcError("access_denied", Some(s"User denied consent (status: $consentStatus)"), state = challenge.state))
             } else {
-              IO(logger.info(s"Consent denied for challenge: $challengeId, status: $consentStatus")) *> {
-                val error = OidcError("access_denied", Some(s"User denied consent (status: $consentStatus)"), state = challenge.state)
-                redirectWithError(challenge.redirectUri, error)
+              verifyConsent(challenge, consentIdParam).flatMap {
+                case Left(reason) =>
+                  IO(logger.warn(s"Consent callback refused for challenge $challengeId: $reason")) *>
+                    redirectWithError(challenge.redirectUri, OidcError("access_denied", Some("The consent could not be verified"), state = challenge.state))
+
+                case Right(consent) if usernameParam.isEmpty =>
+                  // Legacy completion: hand the verified consent_id back to the client.
+                  val stateParam = challenge.state.map(s => s"&state=${java.net.URLEncoder.encode(s, "UTF-8")}").getOrElse("")
+                  val location = s"${challenge.redirectUri}?consent_status=ACCEPTED&consent_id=${java.net.URLEncoder.encode(consent.consentId, "UTF-8")}$stateParam"
+                  IO(logger.info(s"Consent ${consent.consentId} verified — legacy redirect with consent_id")) *>
+                    SeeOther(Location(Uri.unsafeFromString(location)))
+
+                case Right(consent) =>
+                  authService.getUserBySubAndProvider(consent.username, consent.provider).flatMap {
+                    case Some(user) =>
+                      IO(logger.info(s"Consent ${consent.consentId} verified for user '${user.sub}' — issuing authorization code for client ${challenge.clientId}")) *>
+                        generateCodeForUser(
+                          user,
+                          challenge.clientId,
+                          challenge.redirectUri,
+                          challenge.scope,
+                          challenge.state,
+                          challenge.nonce,
+                          challenge.responseType,
+                          Some(consent.consentId)
+                        )
+                    case None =>
+                      IO(logger.warn(s"Consent ${consent.consentId}: user '${consent.username}' (provider '${consent.provider}') could not be resolved")) *>
+                        redirectWithError(challenge.redirectUri, OidcError("access_denied", Some("The consent could not be verified"), state = challenge.state))
+                  }
               }
             }
           }
@@ -558,33 +590,44 @@ class AuthEndpoint(
     } yield response
   }
 
-  /** Resolve the user identified by the Portal consent callback.
-    * Preferred path: `username` + `provider` — resolved via the OBP-API REST endpoint
-    * (GET /obp/v6.0.0/users/provider/PROVIDER/username/USERNAME), which needs no
-    * database access. Without `provider` it falls back to the local lookup
-    * (database view, or the login cache in API-only mode).
+  /** Read the consent from OBP-API and check that it is the consent this challenge was started for:
+    *  - UK flow: it is the consent_id the TPP passed to /auth (a different consent_id on the URL is refused);
+    *    OBP flow: it came from the challenge's consent_request_id;
+    *  - its status is an approved one;
+    *  - it belongs to the challenge's client (its Consumer Key is the client_id).
+    * Left carries the reason for the log; the browser only learns that verification failed.
     */
-  private def resolveCallbackUser(
-      username: Option[String],
-      provider: Option[String]
-  ): IO[Option[User]] =
-    username match {
-      case None => IO.pure(None)
-      case Some(uname) =>
-        val viaProvider = provider match {
-          case Some(p) => authService.getUserBySubAndProvider(uname, p)
-          case None    => IO.pure(Option.empty[User])
-        }
-        viaProvider.flatMap {
-          case found @ Some(_) => IO.pure(found)
+  private def verifyConsent(
+      challenge: ConsentChallenge,
+      consentIdParam: Option[String]
+  ): IO[Either[String, ObpConsent]] = {
+    val consentIdMismatch = (challenge.consentId, consentIdParam) match {
+      case (Some(expected), Some(given)) => given != expected
+      case _                             => false
+    }
+    challenge.consentId.orElse(consentIdParam) match {
+      case _ if consentIdMismatch => IO.pure(Left(s"consent_id on the callback is not the challenge's consent ${challenge.consentId.getOrElse("")}"))
+      case None                   => IO.pure(Left("no consent_id on the callback"))
+      case Some(consentId) =>
+        authService.getConsent(consentId).map {
           case None =>
-            authService.getUserById(uname).flatTap {
-              case Some(u) => IO(logger.info(s"Consent callback user resolved locally: ${u.sub}"))
-              case None    => IO(logger.warn(s"Consent callback username '$uname' could not be resolved — falling back to legacy consent redirect"))
-            }
+            Left(s"consent $consentId not found in OBP-API (or OBP-API could not be reached)")
+          case Some(consent) if !isApprovedConsentStatus(consent.status) =>
+            Left(s"consent $consentId has status ${consent.status}")
+          case Some(consent) if challenge.consentRequestId.exists(expected => !consent.consentRequestId.contains(expected)) =>
+            Left(s"consent $consentId did not come from consent request ${challenge.consentRequestId.getOrElse("")}")
+          case Some(consent) if !consent.clientId.contains(challenge.clientId) =>
+            Left(s"consent $consentId belongs to client ${consent.clientId.getOrElse("(none)")}, not ${challenge.clientId}")
+          case Some(consent) =>
+            Right(consent)
         }
     }
+  }
 
+  /** Issue an authorization code for `user` and send it to `redirectUri`.
+    * Every caller has validated the client and redirect_uri already; they are validated again here so
+    * that no path, present or future, can issue a code for a redirect_uri that is not registered.
+    */
   private def generateCodeForUser(
       user: User,
       clientId: String,
@@ -594,22 +637,27 @@ class AuthEndpoint(
       nonce: Option[String],
       responseType: String = "code",
       consentId: Option[String] = None
-  ): IO[Response[IO]] = {
-    for {
-      _ <- statsService.incrementLoginSuccess(user.username)
-      code <- codeService
-        .generateCode(clientId, redirectUri, user.sub, scope, state, nonce, user.provider, consentId)
-      response <- responseType match {
-        case "code id_token" =>
-          for {
-            idToken <- jwtService.generateHybridIdToken(user, clientId, code, state, nonce, consentId)
-            resp <- redirectWithCodeAndIdToken(redirectUri, code, idToken, state)
-          } yield resp
-        case _ =>
-          redirectWithCode(redirectUri, code, state)
-      }
-    } yield response
-  }
+  ): IO[Response[IO]] =
+    validateClientAndRedirectUri(clientId, redirectUri).flatMap {
+      case false =>
+        IO(logger.error(s"Refusing to issue a code: redirect_uri is not registered for client $clientId")) *>
+          showErrorPage(Status.BadRequest, "Invalid client", "The client_id is not known, or the redirect_uri is not registered for it.")
+      case true =>
+        for {
+          _ <- statsService.incrementLoginSuccess(user.username)
+          code <- codeService
+            .generateCode(clientId, redirectUri, user.sub, scope, state, nonce, user.provider, consentId)
+          response <- responseType match {
+            case "code id_token" =>
+              for {
+                idToken <- jwtService.generateHybridIdToken(user, clientId, code, state, nonce, consentId)
+                resp <- redirectWithCodeAndIdToken(redirectUri, code, idToken, state)
+              } yield resp
+            case _ =>
+              redirectWithCode(redirectUri, code, state)
+          }
+        } yield response
+    }
 
   /** Rebuild the /obp-oidc/auth URL for the current request so an external page
     * (e.g. the Portal register page) can send the user back into the flow.
@@ -642,32 +690,39 @@ class AuthEndpoint(
     s"$baseUrl${sep}return_to=${java.net.URLEncoder.encode(returnTo, "UTF-8")}"
   }
 
+  /** The origin (scheme://host[:port]) of an http or https URI, for the logo link back to the client.
+    * Anything else — another scheme, or a value that does not parse — gives None, and no link is shown.
+    */
+  private def httpOrigin(uriString: String): Option[String] =
+    scala.util.Try(new java.net.URI(uriString)).toOption.flatMap { uri =>
+      Option(uri.getScheme).map(_.toLowerCase).filter(scheme => scheme == "https" || scheme == "http").flatMap { scheme =>
+        Option(uri.getHost).filter(_.nonEmpty).map { host =>
+          val port = if (uri.getPort > 0 && uri.getPort != 80 && uri.getPort != 443) s":${uri.getPort}" else ""
+          s"$scheme://$host$port"
+        }
+      }
+    }
+
+  /** Show the login form for a validated, stored authorization request. The form carries only the
+    * request's id; the matching binding cookie is set on the response (see PendingAuthorization).
+    */
   private def showLoginForm(
-      clientId: String,
-      redirectUri: String,
-      scope: String,
-      state: Option[String],
-      nonce: Option[String],
-      errorMessage: Option[String] = None,
-      responseType: String = "code",
-      consentId: Option[String] = None
+      pending: PendingAuthorization,
+      errorMessage: Option[String] = None
   ): IO[Response[IO]] = {
+    val clientId = pending.clientId
+    val redirectUri = pending.redirectUri
+    val scope = pending.scope
+    val state = pending.state
+    val nonce = pending.nonce
+    val responseType = pending.responseType
+    val consentId = pending.consentId
 
     IO(logger.info(s"showLoginForm called for clientId: $clientId")) *>
       IO(println(s"showLoginForm called for clientId: $clientId")) *>
       (for {
         providers <- authService.getAvailableProviders()
         clientOpt <- authService.findClientByClientIdThatIsKey(clientId)
-
-        stateParam = state
-          .map(s => s"""<input type="hidden" name="state" value="${htmlEncode(s)}">""")
-          .getOrElse("")
-        nonceParam = nonce
-          .map(n => s"""<input type="hidden" name="nonce" value="${htmlEncode(n)}">""")
-          .getOrElse("")
-        consentIdParam = consentId
-          .map(c => s"""<input type="hidden" name="consent_id" value="${htmlEncode(c)}">""")
-          .getOrElse("")
 
         providerOptions = providers
           .map { provider =>
@@ -690,24 +745,11 @@ class AuthEndpoint(
           .replace("Obp ", "OBP "))
 
         errorHtml = errorMessage
-          .map(msg => s"""<div class="error">$msg</div>""")
+          .map(msg => s"""<div class="error">${htmlEncode(msg)}</div>""")
           .getOrElse("")
 
-        // Extract domain origin from redirect_uri for logo link
-        logoLinkUrl =
-          try {
-            val uri = new java.net.URI(redirectUri)
-            val port =
-              if (uri.getPort > 0 && uri.getPort != 80 && uri.getPort != 443) {
-                s":${uri.getPort}"
-              } else {
-                ""
-              }
-            s"${uri.getScheme}://${uri.getHost}${port}"
-          } catch {
-            case _: Exception =>
-              redirectUri // Fallback to full redirect_uri if parsing fails
-          }
+        // Logo links back to the origin of the (validated) redirect_uri, only for http(s)
+        logoLinkUrl = httpOrigin(redirectUri)
 
         forgotPasswordLink = s"${config.obpPortalBaseUrl}/forgot-password"
 
@@ -727,10 +769,13 @@ class AuthEndpoint(
 
         logoHtml = config.logoUrl match {
           case Some(url) =>
+            val image = s"""<img src="${htmlEncode(url)}" alt="${htmlEncode(config.logoAltText)}">"""
+            val linkedImage = logoLinkUrl match {
+              case Some(origin) => s"""<a href="${htmlEncode(origin)}" title="Return to ${formattedClientName}">$image</a>"""
+              case None => image
+            }
             s"""<div class="login-logo">
-              <a href="$logoLinkUrl" title="Return to ${formattedClientName}">
-                <img src="$url" alt="${config.logoAltText}">
-              </a>
+              $linkedImage
             </div>"""
           case None => ""
         }
@@ -798,13 +843,7 @@ class AuthEndpoint(
             </div>"""
           }}
 
-            <input type="hidden" name="client_id" value="${htmlEncode(clientId)}">
-            <input type="hidden" name="redirect_uri" value="${htmlEncode(redirectUri)}">
-            <input type="hidden" name="scope" value="${htmlEncode(scope)}">
-            <input type="hidden" name="response_type" value="${htmlEncode(responseType)}">
-            $stateParam
-            $nonceParam
-            $consentIdParam
+            <input type="hidden" name="auth_request_id" value="${htmlEncode(pending.id)}">
 
             <button type="submit">Sign In</button>
           </form>
@@ -838,6 +877,16 @@ class AuthEndpoint(
         response <- Ok(html).map(
           _.withContentType(
             org.http4s.headers.`Content-Type`(MediaType.text.html)
+          ).addCookie(
+            ResponseCookie(
+              name = authRequestCookiePrefix + pending.id,
+              content = pending.bindingToken,
+              maxAge = Some(config.codeExpirationSeconds.toLong),
+              path = Some("/obp-oidc"),
+              sameSite = Some(SameSite.Lax),
+              secure = config.issuer.startsWith("https://"),
+              httpOnly = true
+            )
           )
         )
         _ <- IO(logger.info(s"Login form HTML generated successfully"))
@@ -975,6 +1024,44 @@ class AuthEndpoint(
     } yield response
   }
 
+  /** An error shown on this server instead of being sent to a redirect_uri, for requests whose client
+    * or redirect_uri could not be trusted (RFC 6749 section 4.1.2.1).
+    */
+  /** This checks that the client is known, that redirect_uri is registered for it, and that redirect_uri
+    * meets RedirectUriRules. A stored entry that breaks the rules (one saved before OBP-API checked them)
+    * is treated as not registered, so it is never used as a redirect target.
+    */
+  private def validateClientAndRedirectUri(clientId: String, redirectUri: String): IO[Boolean] =
+    RedirectUriRules.problemWith(redirectUri) match {
+      case Some(problem) =>
+        IO(logger.warn(s"Refusing redirect_uri for client $clientId: $problem")).as(false)
+      case None =>
+        authService.validateClient(clientId, redirectUri)
+    }
+
+  private def showErrorPage(status: Status, title: String, message: String): IO[Response[IO]] = {
+    val html = s"""<!DOCTYPE html>
+      <html>
+      <head>
+        <title>${htmlEncode(title)} - OBP OIDC Provider</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link rel="stylesheet" href="/static/css/main.css">
+        <link rel="stylesheet" href="/static/css/forms.css">
+      </head>
+      <body class="form-page">
+        <div class="login-container">
+          <h2 data-testid="error-title">${htmlEncode(title)}</h2>
+          <div class="error" role="alert" data-testid="error-message">${htmlEncode(message)}</div>
+        </div>
+      </body>
+      </html>"""
+    IO.pure(
+      Response[IO](status)
+        .withEntity(html)
+        .withContentType(org.http4s.headers.`Content-Type`(MediaType.text.html))
+    )
+  }
+
   private def redirectWithCode(
       redirectUri: String,
       code: String,
@@ -1025,7 +1112,8 @@ object AuthEndpoint {
       rateLimitService: RateLimitService[IO],
       config: OidcConfig,
       jwtService: JwtService[IO],
-      consentChallengesRef: Ref[IO, Map[String, ConsentChallenge]]
+      consentChallengesRef: Ref[IO, Map[String, ConsentChallenge]],
+      pendingAuthorizationsRef: Ref[IO, Map[String, PendingAuthorization]]
   ): AuthEndpoint =
     new AuthEndpoint(
       authService,
@@ -1034,6 +1122,7 @@ object AuthEndpoint {
       rateLimitService,
       config,
       jwtService,
-      consentChallengesRef
+      consentChallengesRef,
+      pendingAuthorizationsRef
     )
 }

@@ -19,7 +19,7 @@
 
 package com.tesobe.oidc.auth
 
-import com.tesobe.oidc.models.{User, OidcError, OidcClient}
+import com.tesobe.oidc.models.{User, OidcError, OidcClient, ObpConsent}
 
 /** Authentication service trait defining the contract for user authentication
   * and client validation in the OIDC provider.
@@ -45,6 +45,13 @@ trait AuthService[F[_]] {
     * instead of requiring a database connection.
     */
   def getUserBySubAndProvider(sub: String, provider: String): F[Option[User]]
+
+  /** Read a Consent from OBP-API (GET /obp/v7.0.0/oidc/consents/CONSENT_ID).
+    * The consent callback uses this record, not the browser's callback parameters,
+    * to decide whether to issue a code and for which user. None when the consent
+    * does not exist or OBP-API cannot be reached.
+    */
+  def getConsent(consentId: String): F[Option[ObpConsent]]
 
   /** Get available authentication providers
     */

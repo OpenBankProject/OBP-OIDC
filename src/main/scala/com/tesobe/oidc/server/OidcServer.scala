@@ -28,7 +28,7 @@ import com.comcast.ip4s.{Host, Port}
 import cats.effect.Ref
 import org.typelevel.ci._
 import com.tesobe.oidc.auth.{CodeService, HybridAuthService, DatabaseClient, ObpApiCredentialsService, ObpApiClientService}
-import com.tesobe.oidc.models.{ConsentChallenge, OidcClient}
+import com.tesobe.oidc.models.{ConsentChallenge, OidcClient, PendingAuthorization}
 import com.tesobe.oidc.bootstrap.ClientBootstrap
 import com.tesobe.oidc.config.{Config, OidcConfig, VerifyCredentialsMethod, VerifyClientMethod}
 import com.tesobe.oidc.endpoints._
@@ -296,6 +296,7 @@ object OidcServer extends IOApp {
 
           // Initialize endpoints
           consentChallengesRef <- Ref.of[IO, Map[String, ConsentChallenge]](Map.empty)
+          pendingAuthorizationsRef <- Ref.of[IO, Map[String, PendingAuthorization]](Map.empty)
           discoveryEndpoint = DiscoveryEndpoint(config)
           jwksEndpoint = JwksEndpoint(jwtService)
           authEndpoint = AuthEndpoint(
@@ -305,7 +306,8 @@ object OidcServer extends IOApp {
             rateLimitService,
             config,
             jwtService,
-            consentChallengesRef
+            consentChallengesRef,
+            pendingAuthorizationsRef
           )
           tokenEndpoint = TokenEndpoint(
             authService,

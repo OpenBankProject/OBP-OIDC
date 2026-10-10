@@ -21,7 +21,7 @@ package com.tesobe.oidc.auth
 
 import cats.effect.{IO, Ref, Resource}
 import com.tesobe.oidc.config.OidcConfig
-import com.tesobe.oidc.models.{User, OidcError}
+import com.tesobe.oidc.models.{ObpConsent, User, OidcError}
 import io.circe.{Decoder, Encoder, Json}
 import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
 import io.circe.syntax._
@@ -562,6 +562,63 @@ class ObpApiCredentialsService(
                   error
                 )
                 IO.pure(None)
+              }
+        }
+    }
+  }
+
+  /** Read a Consent from OBP-API: GET /obp/v7.0.0/oidc/consents/CONSENT_ID.
+    * The DirectLogin user needs CanGetOidcConsent (OIDC operators hold it).
+    * Returns None when the consent is unknown, the call fails or the response
+    * cannot be read, so the consent callback refuses rather than guesses.
+    */
+  def getConsent(consentId: String): IO[Option[ObpConsent]] = {
+    config.obpApiUrl match {
+      case None =>
+        logger.error("OBP_API_URL is not configured for consent lookup")
+        IO.pure(None)
+
+      case Some(baseUrl) =>
+        getValidToken().flatMap {
+          case Left(error) =>
+            logger.error(s"Failed to get token for consent lookup: ${error.error}")
+            IO.pure(None)
+          case Right(token) =>
+            val uri = Uri.unsafeFromString(s"${baseUrl.stripSuffix("/")}/obp/v7.0.0/oidc/consents") / consentId
+            val request = Request[IO](method = Method.GET, uri = uri)
+              .putHeaders(Header.Raw(ci"DirectLogin", s"token=$token"))
+
+            client
+              .run(request)
+              .use { response =>
+                response.status match {
+                  case Status.Ok =>
+                    response.as[Json].flatMap { json =>
+                      val cursor = json.hcursor
+                      val consent = for {
+                        id <- cursor.get[String]("consent_id")
+                        status <- cursor.get[String]("status")
+                        consentRequestId <- cursor.get[Option[String]]("consent_request_id")
+                        consumerId <- cursor.get[String]("consumer_id")
+                        clientId <- cursor.get[Option[String]]("client_id")
+                        userId <- cursor.get[String]("user_id")
+                        username <- cursor.get[String]("username")
+                        provider <- cursor.get[String]("provider")
+                      } yield ObpConsent(id, status, consentRequestId, consumerId, clientId, userId, username, provider)
+                      consent match {
+                        case Right(c) => IO.pure(Some(c))
+                        case Left(err) =>
+                          IO(logger.error(s"Failed to parse consent response: ${err.getMessage}")).as(None)
+                      }
+                    }
+                  case status =>
+                    response.as[String].flatMap { body =>
+                      IO(logger.warn(s"Consent lookup via OBP API: GET $uri returned $status: $body")).as(None)
+                    }
+                }
+              }
+              .handleErrorWith { error =>
+                IO(logger.error(s"Error calling OBP API consent lookup: ${error.getMessage}", error)).as(None)
               }
         }
     }

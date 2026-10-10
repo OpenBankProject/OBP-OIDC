@@ -21,12 +21,14 @@ package com.tesobe.oidc.auth
 
 import cats.effect.IO
 import cats.syntax.either._
-import com.tesobe.oidc.models.{User, OidcError, OidcClient}
+import com.tesobe.oidc.models.{ObpConsent, User, OidcError, OidcClient}
 
 /** Mock authentication service for TESTING PURPOSES ONLY This service should
-  * never be used in production or offered as an option to users
+  * never be used in production or offered as an option to users.
+  *
+  * `consents` stands in for OBP-API's consent records (GET /obp/v7.0.0/oidc/consents/CONSENT_ID).
   */
-class MockAuthService extends AuthService[IO] {
+class MockAuthService(consents: Map[String, ObpConsent] = Map.empty) extends AuthService[IO] {
 
   // Test users for testing only
   private val users = Map(
@@ -85,14 +87,18 @@ class MockAuthService extends AuthService[IO] {
     users.values.find(u => u.sub == sub && u.provider.contains(provider))
   }
 
+  def getConsent(consentId: String): IO[Option[ObpConsent]] = IO {
+    consents.get(consentId)
+  }
+
   def getAvailableProviders(): IO[List[String]] = IO {
     List("obp-test", "test-provider")
   }
 
-  def validateClient(clientId: String, redirectUri: String): IO[Boolean] = IO {
-    // Mock implementation for testing - accepts any client_id and redirect_uri
-    true
-  }
+  // Exact match against the registered redirect_uris, as HybridAuthService does, so tests of
+  // redirect_uri handling exercise the real rule.
+  def validateClient(clientId: String, redirectUri: String): IO[Boolean] =
+    findClientByClientIdThatIsKey(clientId).map(_.exists(_.redirect_uris.contains(redirectUri)))
 
   def findClientByClientIdThatIsKey(clientId: String): IO[Option[OidcClient]] =
     IO {
@@ -103,13 +109,19 @@ class MockAuthService extends AuthService[IO] {
           client_secret = Some("test-secret"),
           client_name = "Test Client",
           consumer_id = "test-consumer",
-          redirect_uris = List("https://example.com/callback"),
+          redirect_uris = registeredRedirectUris(clientId),
           grant_types = List("authorization_code"),
           response_types = List("code"),
           scopes = List("openid", "profile", "email")
         )
       )
     }
+
+  // "legacy-client" stands for a Consumer saved before OBP-API checked redirect URLs: its stored
+  // entries break RedirectUriRules and must never be used, even though they are registered.
+  private def registeredRedirectUris(clientId: String): List[String] =
+    if (clientId == "legacy-client") List("javascript:alert(1)", "http://public.example/cb")
+    else List("https://example.com/callback")
 
   def findAdminClientByClientIdThatIsKey(
       clientId: String
@@ -159,4 +171,5 @@ class MockAuthService extends AuthService[IO] {
 
 object MockAuthService {
   def apply(): MockAuthService = new MockAuthService()
+  def apply(consents: Map[String, ObpConsent]): MockAuthService = new MockAuthService(consents)
 }

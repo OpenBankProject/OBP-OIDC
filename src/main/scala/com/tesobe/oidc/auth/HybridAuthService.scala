@@ -22,7 +22,7 @@ package com.tesobe.oidc.auth
 import cats.effect.{IO, Ref, Resource}
 import cats.implicits._
 import com.tesobe.oidc.config.{DatabaseConfig, ListProvidersMethod, OidcConfig, VerifyCredentialsMethod, VerifyClientMethod}
-import com.tesobe.oidc.models.{User, UserInfo, OidcError, OidcClient}
+import com.tesobe.oidc.models.{ObpConsent, User, UserInfo, OidcError, OidcClient}
 import doobie._
 import doobie.hikari.HikariTransactor
 import doobie.implicits._
@@ -389,6 +389,17 @@ class HybridAuthService(
       }
     }
   }
+
+  /** Read a Consent from OBP-API. There is no database view of consents, so this needs the
+    * OBP API credentials (OBP_API_URL, OBP_API_USERNAME, OBP_API_PASSWORD, OBP_API_CONSUMER_KEY)
+    * in every mode; without them the consent callback refuses to issue a code.
+    */
+  def getConsent(consentId: String): IO[Option[ObpConsent]] =
+    obpApiCredentialsService match {
+      case Some(service) => service.getConsent(consentId)
+      case None =>
+        IO(logger.error(s"getConsent: OBP API credentials are not configured, cannot verify consent $consentId")).as(None)
+    }
 
   /** Get user information by username (for UserInfo endpoint)
     */
@@ -1638,7 +1649,9 @@ object HybridAuthService {
       obpApiService <- {
         val needsCredentialsApi = config.verifyCredentialsMethod == VerifyCredentialsMethod.ViaApiEndpoint
         val needsProvidersApi = config.listProvidersMethod == ListProvidersMethod.ViaApiEndpoint
-        if (needsCredentialsApi || needsProvidersApi) {
+        // Consent verification always goes through OBP-API, so create the service whenever its credentials are set.
+        val hasObpApiCredentials = Seq(config.obpApiUrl, config.obpApiUsername, config.obpApiPassword, config.obpApiConsumerKey).forall(_.isDefined)
+        if (needsCredentialsApi || needsProvidersApi || hasObpApiCredentials) {
           Resource.eval(
             IO(
               logger.info(

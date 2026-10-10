@@ -217,24 +217,58 @@ object RefreshTokenClaims {
 
 // Consent challenge: holds paused authorization state while user approves consent in Portal.
 // No user identity at creation time — the user authenticates on Portal, not here.
-// Portal passes back user_id on the callback so we can generate the auth code.
+// On the callback the consent is read from OBP-API, and the user comes from that record.
+// Exactly one of consentRequestId (OBP consent-request flow) and consentId (UK flow, where the
+// TPP lodged the consent before the redirect) is set; the callback checks the consent against it.
 case class ConsentChallenge(
-    challenge: String,          // Unique ID for this challenge
-    clientId: String,           // Hola's client_id
-    redirectUri: String,        // Hola's redirect_uri
-    scope: String,              // Requested scopes
-    state: Option[String],      // Hola's OAuth state
-    nonce: Option[String],      // Hola's OAuth nonce
-    responseType: String,       // "code" or "code id_token"
-    consentRequestId: String,   // OBP consent_request_id
-    bankId: String,             // OBP bank_id
-    exp: Long                   // Expiration time
+    challenge: String,                // Unique ID for this challenge
+    clientId: String,                 // The client's client_id, validated with redirectUri before the challenge was stored
+    redirectUri: String,              // The client's redirect_uri
+    scope: String,                    // Requested scopes
+    state: Option[String],            // The client's OAuth state
+    nonce: Option[String],            // The client's OAuth nonce
+    responseType: String,             // "code" or "code id_token"
+    consentRequestId: Option[String], // OBP consent_request_id the consent must have come from
+    consentId: Option[String],        // UK consent_id the consent must be
+    bankId: String,                   // OBP bank_id
+    exp: Long                         // Expiration time
 )
 
 object ConsentChallenge {
   implicit val encoder: Encoder[ConsentChallenge] = deriveEncoder
   implicit val decoder: Decoder[ConsentChallenge] = deriveDecoder
 }
+
+// An authorization request that passed client and redirect_uri validation on GET /auth, kept on the
+// server while the user fills in the login form. The form carries only `id`; on submit the values
+// below are used, never values posted by the browser, so a forged form cannot change the client or
+// the redirect_uri a code is issued for. `bindingToken` is also set as a SameSite=Lax cookie when the
+// form is shown, and must come back with the submit, so a form posted from another site is refused.
+case class PendingAuthorization(
+    id: String,
+    bindingToken: String,
+    clientId: String,
+    redirectUri: String,
+    scope: String,
+    state: Option[String],
+    nonce: Option[String],
+    responseType: String,
+    consentId: Option[String],
+    exp: Long
+)
+
+// A Consent as OBP-API records it (GET /obp/v7.0.0/oidc/consents/CONSENT_ID): what the consent
+// callback checks before issuing a code, and the user it issues the code for.
+case class ObpConsent(
+    consentId: String,
+    status: String,
+    consentRequestId: Option[String],
+    consumerId: String,
+    clientId: Option[String],
+    userId: String,
+    username: String,
+    provider: String
+)
 
 // Error responses
 case class OidcError(
