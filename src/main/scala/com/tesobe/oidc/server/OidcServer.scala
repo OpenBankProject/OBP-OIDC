@@ -37,6 +37,8 @@ import com.tesobe.oidc.stats.StatsService
 import com.tesobe.oidc.status.{StatusReport, StatusService}
 import com.tesobe.oidc.ratelimit.{RateLimitConfig, InMemoryRateLimitService}
 import com.tesobe.oidc.revocation.InMemoryTokenRevocationService
+import com.tesobe.oidc.monitoring.{LogCache, ObpRoleCheck, Telemetry}
+import org.http4s.ember.client.EmberClientBuilder
 import org.http4s._
 import org.http4s.ember.server.EmberServerBuilder
 import org.http4s.implicits._
@@ -101,6 +103,8 @@ object OidcServer extends IOApp {
   }
 
   def run(args: List[String]): IO[ExitCode] = {
+    // Keep the server's output for GET /monitoring/log-cache/LEVEL, from the first line
+    LogCache.install()
     // Check for developer helper commands
     args.headOption match {
       case Some("--generate-config") | Some("--config") =>
@@ -149,6 +153,7 @@ object OidcServer extends IOApp {
           println(s"     -> User lookup via OBP API (requires OBP_API_USERNAME '$username' to have role CanGetAnyUser)")
           println(s"     -> Clients verified via OBP API (requires OBP_API_USERNAME '$username' to have role CanGetOidcClient)")
           println(s"     -> Consumers listed via OBP API (requires OBP_API_USERNAME '$username' to have role CanGetConsumers)")
+          println(s"     -> Consents read via OBP API (requires OBP_API_USERNAME '$username' to have role CanGetOidcConsent)")
           println(s"     -> Providers listed via OBP API (GET /obp/v6.0.0/providers - no special role required, just authentication)")
         }
       }
@@ -193,8 +198,13 @@ object OidcServer extends IOApp {
               base ++ createConsumer
             case _ => List.empty
           })
+        // Consent callbacks always read the consent from OBP-API. Without CanGetOidcConsent only the
+        // consent flows fail, so a missing grant is reported at startup rather than aborting it.
+        val hasObpApiCredentials = Seq(config.obpApiUrl, config.obpApiUsername, config.obpApiPassword, config.obpApiConsumerKey).forall(_.isDefined)
+        val consentRoles = if (hasObpApiCredentials) List("CanGetOidcConsent") else Nil
+        val rolesToCheck = requiredRoles ++ consentRoles
 
-        if (requiredRoles.nonEmpty) {
+        if (rolesToCheck.nonEmpty) {
           // Step 1: Verify OBP API connectivity (with retry/backoff for when OBP-API is starting up)
           retryWithBackoff(
             ObpApiCredentialsService.testConnection(config),
@@ -203,19 +213,27 @@ object OidcServer extends IOApp {
             config.obpApiRetryDelaySeconds.seconds
           ).flatMap(msg => IO(println(msg))) *>
           // Step 2: Check all required roles (abort immediately if any are missing)
-          ObpApiCredentialsService.checkRequiredRoles(config, requiredRoles).flatMap {
+          ObpApiCredentialsService.checkRequiredRoles(config, rolesToCheck).flatMap {
             case Right(roleCheck) =>
               val username = config.obpApiUsername.getOrElse("unknown")
               val baseUrl = config.obpApiUrl.getOrElse("unknown")
+              val missingRequired = roleCheck.missing.filterNot(consentRoles.contains)
+              val missingConsent = roleCheck.missing.filter(consentRoles.contains)
               roleCheckRef.set(Some(roleCheck)) *>
-              (if (roleCheck.allPresent) {
+              (if (missingRequired.isEmpty) {
                 IO(println(s"Role check passed: OBP API user '$username' has all ${requiredRoles.size} required roles"))
               } else {
                 IO.raiseError(new RuntimeException(
-                  s"STARTUP ABORTED: OBP API user '$username' is missing required role(s): ${roleCheck.missing.mkString(", ")}. " +
+                  s"STARTUP ABORTED: OBP API user '$username' is missing required role(s): ${missingRequired.mkString(", ")}. " +
                   s"Please grant these roles to user '$username' at $baseUrl and restart."
                 ))
-              })
+              }) *>
+              (if (missingConsent.nonEmpty) {
+                IO(println(
+                  s"WARNING: OBP API user '$username' is missing role(s): ${missingConsent.mkString(", ")}. " +
+                  s"Consent callbacks will be refused until these are granted at $baseUrl."
+                ))
+              } else IO.unit)
             case Left(error) => IO.raiseError(new RuntimeException(error))
           }
         } else {
@@ -326,6 +344,10 @@ object OidcServer extends IOApp {
           statsEndpoint = StatsEndpoint(statsService, config)
           statusEndpoint = StatusEndpoint(statusService)
           staticFilesEndpoint = StaticFilesEndpoint()
+          roleCheck <- config.obpApiUrl.traverse { url =>
+            EmberClientBuilder.default[IO].build.allocated.map(_._1).flatMap(ObpRoleCheck(url, _))
+          }
+          monitoringEndpoint = MonitoringEndpoint(roleCheck)
           registrationEndpoint = if (config.enableDynamicClientRegistration) {
             Some(RegistrationEndpoint(
               authService,
@@ -824,6 +846,13 @@ object OidcServer extends IOApp {
                     case None       => NotFound("Revocation endpoint not found")
                   }
 
+                // Log cache and Telemetry, for a monitor such as OBP-Sentinel
+                case req @ GET -> Root / "monitoring" / "log-cache" / _ =>
+                  monitoringEndpoint.routes.run(req).getOrElseF(NotFound("OBP-OIDC: no route matches this request"))
+
+                case req @ GET -> Root / "monitoring" / "telemetry" =>
+                  monitoringEndpoint.routes.run(req).getOrElseF(NotFound("OBP-OIDC: no route matches this request"))
+
                 // Dynamic Client Registration endpoint (RFC 7591)
                 case req @ POST -> Root / "obp-oidc" / "connect" / "register" =>
                   registrationEndpoint match {
@@ -947,7 +976,7 @@ object OidcServer extends IOApp {
             .default[IO]
             .withHost(host)
             .withPort(port)
-            .withHttpApp(withSecurityHeaders(routes))
+            .withHttpApp(withSecurityHeaders(Telemetry.timed(routes)))
             .build
             .use { server =>
               val baseUriString = server.baseUri.toString.stripSuffix("/")
@@ -984,7 +1013,8 @@ object OidcServer extends IOApp {
                     ("CanGetAnyUser", "GET /obp/v6.0.0/users/provider/PROVIDER/username/USERNAME"),
                     ("CanGetOidcClient", "GET /obp/v6.0.0/oidc/clients/CLIENT_ID"),
                     ("CanVerifyOidcClient", "POST /obp/v6.0.0/oidc/clients/verify"),
-                    ("CanGetConsumers", "GET /obp/v6.0.0/management/consumers")
+                    ("CanGetConsumers", "GET /obp/v6.0.0/management/consumers"),
+                    ("CanGetOidcConsent", "GET /obp/v7.0.0/oidc/consents/CONSENT_ID")
                   )
                   val roleEndpoints =
                     if (config.enableDynamicClientRegistration || !config.skipClientBootstrap)

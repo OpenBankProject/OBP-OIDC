@@ -495,6 +495,20 @@ GET /jwks
 
 Returns JSON Web Key Set for token verification.
 
+### Monitoring Endpoints (for OBP-Sentinel)
+
+```
+GET /monitoring/log-cache/{trace|debug|info|warning|error|all}?limit=N&offset=N
+GET /monitoring/telemetry?name_prefix=oidc.
+```
+
+This server's recent output (stdout and stderr, kept in memory) and its Telemetry (requests by route,
+JVM memory and threads, the git commit it was built from), in the shape of OBP-API's own log cache and
+Telemetry endpoints. Send a Bearer token from OBP-API: the server checks it with OBP-API (`OBP_API_URL`),
+which needs the same Roles OBP-API's endpoints do: `CanGetSystemLogCache<Level>` (or
+`CanGetSystemLogCacheAll`) and `CanGetTelemetry`. OBP-Sentinel finds this server through
+`public_obp_oidc_url` in OBP-API's app directory.
+
 ## Testing the Server
 
 ### Quick Health Check
