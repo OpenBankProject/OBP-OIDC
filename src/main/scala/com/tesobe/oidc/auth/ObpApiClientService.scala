@@ -150,6 +150,10 @@ class ObpApiClientService(
 
   /** Obtain a DirectLogin token using username/password
     * Reuses the same approach as ObpApiCredentialsService
+    *
+    * TODO: We should probably switch this to Client Credentials access (the
+    * OBP-API OIDC Operator Consumer) rather than DirectLogin with the OIDC
+    * Operator User. See ObpApiCredentialsService.obtainDirectLoginToken.
     */
   private[auth] def obtainDirectLoginToken(): IO[Either[OidcError, String]] = {
     (config.obpApiUrl, config.obpApiUsername, config.obpApiPassword, config.obpApiConsumerKey) match {

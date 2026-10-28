@@ -102,6 +102,15 @@ class ObpApiCredentialsService(
   private val logger = LoggerFactory.getLogger(getClass)
 
   /** Obtain a DirectLogin token using username/password
+    *
+    * TODO: We should probably switch this to Client Credentials access rather
+    * than DirectLogin. OBP-API can bootstrap an OIDC Operator Consumer
+    * (props oidc_operator_consumer_key / oidc_operator_consumer_secret) that
+    * already holds the Scopes OBP-OIDC needs, so OBP-OIDC could authenticate
+    * as an application without a User. That would remove the need for the
+    * OIDC Operator User (props oidc_operator_username /
+    * oidc_operator_initial_password / oidc_operator_email) and for
+    * OBP_API_USERNAME / OBP_API_PASSWORD here.
     */
   private[oidc] def obtainDirectLoginToken(): IO[Either[OidcError, String]] = {
     (config.obpApiUrl, config.obpApiUsername, config.obpApiPassword, config.obpApiConsumerKey) match {
