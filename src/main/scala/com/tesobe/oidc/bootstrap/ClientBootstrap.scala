@@ -105,9 +105,11 @@ class ClientBootstrap(authService: HybridAuthService, config: OidcConfig) {
     ClientDefinition(name = "agent-2", redirect_uris = "http://localhost:5180/login/obp/callback"),
     ClientDefinition(name = "agent-3", redirect_uris = "http://localhost:5181/login/obp/callback"),
     ClientDefinition(name = "agent-4", redirect_uris = "http://localhost:5182/login/obp/callback"),
+    ClientDefinition(name = "obp-cohort", redirect_uris = "http://localhost:5183/login/obp/callback"),
     ClientDefinition(name = "obp-hola", redirect_uris = "http://localhost:48123/main.html"),
     ClientDefinition(name = "obp-load-tester", redirect_uris = ""),
-    ClientDefinition(name = "obp-sentinel", redirect_uris = "")
+    ClientDefinition(name = "obp-sentinel", redirect_uris = ""),
+    ClientDefinition(name = "obp-scanner", redirect_uris = "")
   )
 
   /** Generate secure database passwords and print ready-to-use configuration
