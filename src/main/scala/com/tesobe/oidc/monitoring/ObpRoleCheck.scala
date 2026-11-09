@@ -32,7 +32,7 @@ import scala.concurrent.duration._
 /** Whether an OBP-API token may see what this server guards with an OBP Role.
   * OBP-API answers, through GET /obp/v7.0.0/banks/SYS/my/roles/ROLE_NAME, with
   * the same rules its own endpoints use: the token's User holds the Role, or
-  * its Consumer holds it as a Scope (auth mode UserOrApplication).
+  * its Consumer holds it as a Scope (auth mode UserXORApplication).
   */
 sealed trait RoleCheck
 object RoleCheck {
@@ -59,7 +59,7 @@ final class ObpRoleCheck(
       else
         response.asJson.map { body =>
           val modes = body.hcursor.downField("allowed_for_auth_modes").as[List[String]].getOrElse(Nil)
-          if (modes.contains("UserOrApplication")) RoleCheck.Allowed else RoleCheck.Forbidden
+          if (modes.contains("UserXORApplication")) RoleCheck.Allowed else RoleCheck.Forbidden
         }
     }
   }
