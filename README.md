@@ -209,49 +209,52 @@ mvn exec:java -Dexec.mainClass="com.tesobe.oidc.server.OidcServer"
 - Statistics and debugging information (`/stats`)
 - Client configuration details (`/clients`)
 
-#### Verification Method (Database vs OBP API)
+#### Verification Method (OBP API vs Database)
 
-OBP-OIDC supports two modes for verifying users, clients, and listing providers, controlled by a single env var `USE_VERIFY_ENDPOINTS`:
+OBP-OIDC can verify users and clients, and list providers, in two ways. One env var, `USE_VERIFY_ENDPOINTS`,
+chooses between them.
 
-**1. Database Views (Default):** `USE_VERIFY_ENDPOINTS=false`
+**1. OBP API endpoints (the default):** `USE_VERIFY_ENDPOINTS=true`
+- Verifies credentials via `POST /obp/v6.0.0/users/verify-credentials`
+- Verifies clients via `GET /obp/v6.0.0/oidc/clients/CLIENT_ID` and `POST /obp/v6.0.0/oidc/clients/verify`
+- Lists providers via `GET /obp/v6.0.0/providers`
+- Needs `OBP_API_URL`, `OBP_API_USERNAME`, `OBP_API_PASSWORD` and `OBP_API_CONSUMER_KEY`. If any is missing,
+  OBP-OIDC stops at startup and names the missing settings.
+- `OBP_API_USERNAME` needs the roles `CanVerifyUserCredentials`, `CanGetAnyUser`, `CanGetOidcClient`,
+  `CanVerifyOidcClient` and `CanGetConsumers`. It also needs `CanCreateConsumer` if OBP-OIDC creates its
+  standard clients at startup, or if Dynamic Client Registration is on.
+- No database connection is needed. OBP-OIDC does not read OBP-API's database in this mode, including when it
+  creates its standard clients at startup.
+
+**2. Database views (deprecated):** `USE_VERIFY_ENDPOINTS=false`
 - Verifies credentials against the `v_oidc_users` database view
 - Verifies clients against the `v_oidc_clients` database view
 - Lists providers from the `v_oidc_users` database view
-- Requires database access to the OBP user/client tables
+- Needs database access to OBP-API's user and client tables
 
-**2. OBP API Endpoints:** `USE_VERIFY_ENDPOINTS=true`
-- Verifies credentials via `POST /obp/v6.0.0/users/verify-credentials`
-- Verifies clients via `GET /obp/v6.0.0/oidc/clients/CLIENT_ID`
-- Lists providers via `GET /obp/v6.0.0/providers`
-- Useful when you don't want to grant direct database access to OBP-OIDC
-- Requires `OBP_API_USERNAME` to have `CanVerifyUserCredentials`, `CanGetAnyUser`, `CanGetOidcClient` and `CanGetConsumers` roles
-- When combined with `OIDC_SKIP_CLIENT_BOOTSTRAP=true`, no database connection is needed at all
+Reading users and clients from SQL views is deprecated and will be removed in a future version. The views must be
+updated by hand whenever OBP-API changes, and they differ between database vendors, so every upgrade is a risk.
+While the views are in use, OBP-OIDC logs a warning at startup and shows it on the status page (`/status`) and in
+`/status.json` (`warnings`).
+
+**Upgrading:** the default used to be `false`. If your installation relied on that default, either add the
+OBP API settings above, or set `USE_VERIFY_ENDPOINTS=false` to keep using the views for now.
 
 **Configuration:**
 
 ```bash
-# Default: Use database views (no extra configuration needed)
-USE_VERIFY_ENDPOINTS=false
-
-# Alternative: Use OBP API endpoints
+# Default: use OBP API endpoints
 USE_VERIFY_ENDPOINTS=true
 OBP_API_URL=http://localhost:8080
-OBP_API_USERNAME=admin_user          # Needs CanVerifyUserCredentials + CanGetAnyUser + CanGetOidcClient + CanGetConsumers roles
+OBP_API_USERNAME=admin_user          # Needs the roles listed above
 OBP_API_PASSWORD=admin_password
 OBP_API_CONSUMER_KEY=your_consumer_key
+
+# Deprecated: use database views
+USE_VERIFY_ENDPOINTS=false
 ```
 
 **Startup Output:**
-
-When using database views (`USE_VERIFY_ENDPOINTS=false`):
-```
-Database connection successful. Found X validated users in v_oidc_users view.
-...
-USE_VERIFY_ENDPOINTS: false
-  Credential verification: v_oidc_users (database view)
-  Client verification: v_oidc_clients (database view)
-  Provider listing: v_oidc_users (database view)
-```
 
 When using OBP API endpoints (`USE_VERIFY_ENDPOINTS=true`):
 ```
@@ -260,9 +263,21 @@ USE_VERIFY_ENDPOINTS: true
   OBP API Username: admin_user
 ```
 
+When using database views (`USE_VERIFY_ENDPOINTS=false`):
+```
+WARNING: OBP-OIDC is reading users and clients directly from SQL views in OBP-API's database ...
+Database connection successful. Found X validated users in v_oidc_users view.
+...
+USE_VERIFY_ENDPOINTS: false
+  Credential verification: v_oidc_users (database view)
+  Client verification: v_oidc_clients (database view)
+  Provider listing: v_oidc_users (database view)
+```
+
 **Note:** When using `USE_VERIFY_ENDPOINTS=true`, the server will retry connecting to the OBP API on startup. It will fail if:
 - The OBP API is unreachable after all retry attempts
 - The username/password/consumer_key is invalid
+- The OBP API user is missing a required role
 
 The `/info` page (available in Local Development Mode) also displays the current verification method, username, and role status.
 
@@ -1099,3 +1114,21 @@ This project is licensed under the same terms as the Open Bank Project.
 - **JWT**: Auth0 Java JWT library
 - **Build Tool**: Maven
 - **Testing**: ScalaTest
+
+## Writing documentation
+
+Write documentation, error messages, log messages and code comments in plain English. Plain English is not
+simplified English: it keeps the meaning and the detail, and says it clearly. Two UK guides explain how:
+
+- [Clear language](https://guidance.publishing.service.gov.uk/writing-to-gov-uk-standards/writing-guidelines/clear-language/) from GOV.UK
+- [How to write in plain English](https://www.plainenglish.co.uk/how-to-write-in-plain-english) from the Plain English Campaign
+
+In short:
+
+- Keep sentences to 15 to 20 words on average, and split any sentence over 25 words.
+- Use the active voice: "OBP-OIDC refuses the request", not "the request is refused".
+- Use short, familiar words: "start", not "commence"; "before", not "prior to".
+- Explain a technical term the first time you use it. Specialists prefer plain English too.
+- Write full sentences. Avoid long chains joined by semicolons, and make sure every "it" and "they" clearly
+  refers to one thing.
+- Give an example when a rule is hard to follow on its own.

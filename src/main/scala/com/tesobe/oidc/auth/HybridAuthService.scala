@@ -37,11 +37,11 @@ import java.util.UUID
 
 /** Hybrid authentication service supporting both database and API-based verification.
   *
-  * When USE_VERIFY_ENDPOINTS=false (default), this service connects to the OBP database
+  * When USE_VERIFY_ENDPOINTS=false (deprecated), this service connects to the OBP database
   * and authenticates users against the authuser table via the read-only view created
   * by the OIDC setup script. Password verification uses BCrypt to match the OBP-API implementation.
   *
-  * When USE_VERIFY_ENDPOINTS=true, credentials are verified via the OBP API
+  * When USE_VERIFY_ENDPOINTS=true (the default), credentials are verified via the OBP API
   * endpoint POST /obp/v6.0.0/users/verify-credentials, clients via
   * GET /obp/v6.0.0/oidc/clients/CLIENT_ID, and providers via GET /obp/v6.0.0/providers.
   */
@@ -669,6 +669,27 @@ class HybridAuthService(
     }
   }
 
+  /** Whether v_oidc_clients reports each Consumer's own grant types (OBP-API's view reads its granttypes column).
+    * An older view hardcodes them for every client; its grant_types are then not trusted and every grant is
+    * allowed, as before. Asked once; a view that cannot be read counts as the older one.
+    */
+  private val viewHasOwnGrantTypes = new java.util.concurrent.atomic.AtomicReference[Option[Boolean]](None)
+
+  private def grantTypesTrusted: IO[Boolean] = viewHasOwnGrantTypes.get match {
+    case Some(known) => IO.pure(known)
+    case None =>
+      sql"SELECT pg_get_viewdef('v_oidc_clients'::regclass)".query[String].unique
+        .transact(requireTransactor)
+        .map(_.toLowerCase.contains("granttypes"))
+        .handleError(_ => false)
+        .flatTap { trusted =>
+          IO {
+            viewHasOwnGrantTypes.set(Some(trusted))
+            if (!trusted) logger.warn("v_oidc_clients does not report each Consumer's grant types (an older view): every client may use every grant. Re-create the view from OBP-API's cre_v_oidc_clients.sql to honour them.")
+          }
+        }
+  }
+
   /** Find OIDC client by client_id via the v_oidc_clients database view
     */
   private def findClientByClientIdViaDatabase(
@@ -682,15 +703,14 @@ class HybridAuthService(
       WHERE client_id = $clientId
     """.query[DatabaseClient]
 
-    query.option
-      .transact(requireTransactor)
-      .map { result =>
-        result.map { client =>
-          logger.debug(s"Found client: ${client.client_name} with id: ${client.client_id}")
-          client.toOidcClient
-        }
-      }
-      .handleErrorWith { error =>
+    (for {
+      result <- query.option.transact(requireTransactor)
+      trusted <- grantTypesTrusted
+    } yield result.map { client =>
+      logger.debug(s"Found client: ${client.client_name} with id: ${client.client_id}")
+      val oidcClient = client.toOidcClient
+      if (trusted) oidcClient else oidcClient.copy(grant_types = ClientGrantTypes.All)
+    }).handleErrorWith { error =>
         logger.error(s"Database error looking up client: ${error.getMessage}")
         IO.pure(None)
       }

@@ -78,6 +78,9 @@ class StatusEndpoint(statusService: StatusService) {
     val overallLabel = if (report.overallOk) "All systems operational" else "Degraded service"
     val overallCls = if (report.overallOk) "ok" else "fail"
     val rows = report.checks.map(renderRow).mkString("\n")
+    val warnings = report.warnings.zipWithIndex.map { case (w, i) =>
+      s"""    <div class="warning" role="alert" data-testid="status-warning-$i"><strong>Deprecated setting</strong>${htmlEncode(w)}</div>"""
+    }.mkString("\n")
     val generated = htmlEncode(report.generatedAt.toString)
     val credentialMethod = htmlEncode(report.credentialVerificationMethod)
     val clientMethod = htmlEncode(report.clientVerificationMethod)
@@ -110,6 +113,8 @@ class StatusEndpoint(statusService: StatusService) {
        |    }
        |    .overall.ok   { background: #d1fae5; color: #065f46; border: 2px solid #10b981; }
        |    .overall.fail { background: #fee2e2; color: #991b1b; border: 2px solid #ef4444; }
+       |    .warning { background: #fef3c7; color: #92400e; border: 2px solid #f59e0b; border-radius: 8px; padding: 12px 16px; margin: 0 0 20px 0; }
+       |    .warning strong { display: block; margin-bottom: 4px; }
        |    table.status {
        |      width: 100%;
        |      border-collapse: collapse;
@@ -177,6 +182,7 @@ class StatusEndpoint(statusService: StatusService) {
        |    <h1>Service Status</h1>
        |    <p class="subtitle">OBP OIDC Provider</p>
        |    <div class="overall $overallCls" data-testid="status-overall">$overallLabel</div>
+       |$warnings
        |    <div class="config-box" data-testid="status-config">
        |      <div class="config-line">
        |        <span class="config-label">Version:</span>

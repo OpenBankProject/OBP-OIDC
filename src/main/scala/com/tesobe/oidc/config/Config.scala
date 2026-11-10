@@ -75,7 +75,7 @@ case class OidcConfig(
     registrationUrl: Option[String] = Some("http://localhost:5174/register"), // None = hide the Register link
     skipClientBootstrap: Boolean = false,
     enableDynamicClientRegistration: Boolean = true,
-    useVerifyEndpoints: Boolean = false,
+    useVerifyEndpoints: Boolean = true,
     obpApiUsername: Option[String] = None,
     obpApiPassword: Option[String] = None,
     obpApiConsumerKey: Option[String] = None,
@@ -97,8 +97,32 @@ case class OidcConfig(
     else ListProvidersMethod.ViaOidcUsersView
 
   /** Whether any configured method requires a database connection */
-  def needsDatabase: Boolean =
-    !skipClientBootstrap || !useVerifyEndpoints
+  /** Only the deprecated SQL view mode reads OBP-API's database. In endpoint mode, everything (users, clients and
+    * the clients created at startup) goes through OBP-API's endpoints. */
+  def needsDatabase: Boolean = !useVerifyEndpoints
+
+  /** Warnings about deprecated settings in this configuration, shown in the log at startup and on the status page. */
+  /** The OBP-API settings that endpoint mode needs but are not set. Empty when nothing is missing. */
+  def missingObpApiSettings: List[String] =
+    List(
+      "OBP_API_URL" -> obpApiUrl,
+      "OBP_API_USERNAME" -> obpApiUsername,
+      "OBP_API_PASSWORD" -> obpApiPassword,
+      "OBP_API_CONSUMER_KEY" -> obpApiConsumerKey
+    ).collect { case (name, None) => name }
+
+  def deprecationWarnings: List[String] =
+    if (useVerifyEndpoints) Nil
+    else List(OidcConfig.SqlViewAccessDeprecated)
+}
+
+object OidcConfig {
+  val SqlViewAccessDeprecated: String =
+    "OBP-OIDC is reading users and clients directly from SQL views in OBP-API's database " +
+      "(v_oidc_users, v_oidc_clients and v_oidc_admin_clients). This is deprecated and will be removed in a future version. " +
+      "Set USE_VERIFY_ENDPOINTS=true so that OBP-OIDC uses OBP-API's endpoints instead. " +
+      "The views must be updated by hand whenever OBP-API changes, and they differ between database vendors, " +
+      "so every upgrade is a risk."
 }
 
 object Config {
@@ -186,7 +210,7 @@ object Config {
       enableDynamicClientRegistration =
         sys.env.getOrElse("ENABLE_DYNAMIC_CLIENT_REGISTRATION", "true").toBoolean,
       useVerifyEndpoints =
-        sys.env.getOrElse("USE_VERIFY_ENDPOINTS", "false").toBoolean,
+        sys.env.getOrElse("USE_VERIFY_ENDPOINTS", "true").toBoolean,
       obpApiUsername = sys.env.get("OBP_API_USERNAME"),
       obpApiPassword = sys.env.get("OBP_API_PASSWORD"),
       obpApiConsumerKey = sys.env.get("OBP_API_CONSUMER_KEY"),

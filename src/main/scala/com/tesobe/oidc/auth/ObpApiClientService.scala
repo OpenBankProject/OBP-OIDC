@@ -53,7 +53,9 @@ case class VerifyClientResponse(
     valid: Boolean,
     client_id: Option[String],
     consumer_id: Option[String],
-    redirect_uris: Option[List[String]]
+    redirect_uris: Option[List[String]],
+    // The grant types OBP allows for the client; absent from an older OBP-API (then every grant, as before)
+    grant_types: Option[List[String]] = None
 )
 
 object VerifyClientResponse {
@@ -67,7 +69,9 @@ case class GetClientResponse(
     client_name: String,
     consumer_id: String,
     redirect_uris: List[String],
-    enabled: Boolean
+    enabled: Boolean,
+    // The grant types OBP allows for the client; absent from an older OBP-API (then every grant, as before)
+    grant_types: Option[List[String]] = None
 )
 
 object GetClientResponse {
@@ -361,7 +365,7 @@ class ObpApiClientService(
                               consumer_id = verifyResponse.consumer_id.getOrElse(""),
                               client_name = "", // Not returned by API
                               redirect_uris = verifyResponse.redirect_uris.getOrElse(List.empty),
-                              grant_types = List("authorization_code", "refresh_token"),
+                              grant_types = verifyResponse.grant_types.getOrElse(ClientGrantTypes.All),
                               response_types = List("code"),
                               scopes = List("openid", "profile", "email"),
                               token_endpoint_auth_method = "client_secret_basic",
@@ -735,7 +739,7 @@ class ObpApiClientService(
                             consumer_id = clientResponse.consumer_id,
                             client_name = clientResponse.client_name,
                             redirect_uris = clientResponse.redirect_uris,
-                            grant_types = List("authorization_code", "refresh_token"),
+                            grant_types = clientResponse.grant_types.getOrElse(ClientGrantTypes.All),
                             response_types = List("code"),
                             scopes = List("openid", "profile", "email"),
                             token_endpoint_auth_method = "client_secret_basic",

@@ -207,7 +207,10 @@ case class RefreshTokenClaims(
     jti: String, // JWT ID (unique token identifier)
     scope: String,
     client_id: String,
-    consent_id: Option[String] = None // Carried across token rotation so refreshed access tokens stay consent-bound
+    consent_id: Option[String] = None, // Carried across token rotation so refreshed access tokens stay consent-bound
+    // The user's identity provider, so the user can be looked up in OBP-API when the token is refreshed.
+    // Absent from refresh tokens issued before it was added.
+    provider: Option[String] = None
 )
 
 object RefreshTokenClaims {

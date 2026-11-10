@@ -110,12 +110,20 @@ class MockAuthService(consents: Map[String, ObpConsent] = Map.empty) extends Aut
           client_name = "Test Client",
           consumer_id = "test-consumer",
           redirect_uris = registeredRedirectUris(clientId),
-          grant_types = List("authorization_code"),
+          grant_types = grantTypes(clientId),
           response_types = List("code"),
           scopes = List("openid", "profile", "email")
         )
       )
     }
+
+  // Grant types as OBP reports them: a Consumer that sets none allows every grant; "cc-only-client" and
+  // "people-only-client" stand for Consumers whose administrator set them.
+  private def grantTypes(clientId: String): List[String] = clientId match {
+    case "cc-only-client"     => List(ClientGrantTypes.ClientCredentials)
+    case "people-only-client" => List(ClientGrantTypes.AuthorizationCode, ClientGrantTypes.RefreshToken)
+    case _                    => ClientGrantTypes.All
+  }
 
   // "legacy-client" stands for a Consumer saved before OBP-API checked redirect URLs: its stored
   // entries break RedirectUriRules and must never be used, even though they are registered.

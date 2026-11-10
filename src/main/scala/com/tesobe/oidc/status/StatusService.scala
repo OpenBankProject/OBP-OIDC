@@ -51,7 +51,9 @@ case class StatusReport(
     credentialVerificationMethod: String,
     clientVerificationMethod: String,
     dynamicClientRegistrationEnabled: Boolean,
-    issuer: String
+    issuer: String,
+    // Deprecated settings in use, for the operator to change (see OidcConfig.deprecationWarnings)
+    warnings: List[String] = Nil
 )
 
 object StatusReport {
@@ -125,6 +127,7 @@ object StatusReport {
       report.dynamicClientRegistrationEnabled
     ),
     "issuer" -> Json.fromString(report.issuer),
+    "warnings" -> Json.arr(report.warnings.map(Json.fromString): _*),
     "well_known_urls" -> Json.arr(
       wellKnownUrls(report.issuer).map(Json.fromString): _*
     ),
@@ -224,7 +227,8 @@ class StatusService(
       clientVerificationMethod =
         StatusReport.clientMethodLabel(config.verifyClientMethod),
       dynamicClientRegistrationEnabled = config.enableDynamicClientRegistration,
-      issuer = config.issuer
+      issuer = config.issuer,
+      warnings = config.deprecationWarnings
     )
   }
 

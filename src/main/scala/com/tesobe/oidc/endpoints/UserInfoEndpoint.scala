@@ -64,8 +64,12 @@ class UserInfoEndpoint(authService: AuthService[IO], jwtService: JwtService[IO])
             OidcError("insufficient_scope", Some("Token must include 'openid' scope")).asJson
           )
         } else {
-          // Get user information
-          authService.getUserById(claims.sub).flatMap {
+          // Look the user up by provider and username when the token says which provider. Without a database
+          // this asks OBP-API, so /userinfo works after a restart.
+          (claims.provider match {
+            case Some(provider) => authService.getUserBySubAndProvider(claims.sub, provider)
+            case None           => authService.getUserById(claims.sub)
+          }).flatMap {
             case Some(user) =>
               val userInfo = UserInfo(
                 sub = user.sub,

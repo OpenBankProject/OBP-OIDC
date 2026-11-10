@@ -128,6 +128,18 @@ object OidcServer extends IOApp {
       )
       _ <- IO(println(s"Issuer: ${config.issuer}"))
       _ <- IO(println(s"needsDatabase: ${config.needsDatabase}"))
+      // Endpoint mode (the default) needs OBP-API's address and an account to call it with.
+      _ <- if (config.useVerifyEndpoints && config.missingObpApiSettings.nonEmpty)
+        IO.raiseError(new RuntimeException(
+          s"STARTUP ABORTED: OBP-OIDC reads users and clients through OBP-API's endpoints (USE_VERIFY_ENDPOINTS=true, " +
+            s"the default). It needs these settings, which are missing: ${config.missingObpApiSettings.mkString(", ")}. " +
+            "Set them, or set USE_VERIFY_ENDPOINTS=false to read OBP-API's SQL views instead (deprecated)."
+        ))
+      else IO.unit
+      _ <- config.deprecationWarnings.traverse_ { warning =>
+        IO(org.slf4j.LoggerFactory.getLogger("com.tesobe.oidc.server.OidcServer").warn(warning)) *>
+          IO(println(s"WARNING: $warning"))
+      }
 
       // Test database connections (only if database is needed)
       _ <- if (config.needsDatabase) {
@@ -146,9 +158,7 @@ object OidcServer extends IOApp {
       } else {
         val username = config.obpApiUsername.getOrElse("unknown")
         IO {
-          println("No database connection required. Reason:")
-          println(s"   OIDC_SKIP_CLIENT_BOOTSTRAP=true")
-          println(s"   USE_VERIFY_ENDPOINTS=true")
+          println("No database connection required, because USE_VERIFY_ENDPOINTS=true:")
           println(s"     -> Credentials verified via OBP API (requires OBP_API_USERNAME '$username' to have role CanVerifyUserCredentials)")
           println(s"     -> User lookup via OBP API (requires OBP_API_USERNAME '$username' to have role CanGetAnyUser)")
           println(s"     -> Clients verified via OBP API (requires OBP_API_USERNAME '$username' to have role CanGetOidcClient)")

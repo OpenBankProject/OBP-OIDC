@@ -20,7 +20,7 @@
 package com.tesobe.oidc.endpoints
 
 import cats.effect.{IO, Ref}
-import com.tesobe.oidc.auth.{AuthService, CodeService, RedirectUriRules}
+import com.tesobe.oidc.auth.{AuthService, ClientGrantTypes, CodeService, RedirectUriRules}
 import com.tesobe.oidc.endpoints.HtmlUtils.htmlEncode
 import com.tesobe.oidc.models.{ConsentChallenge, ObpConsent, OidcError, PendingAuthorization, User}
 import com.tesobe.oidc.ratelimit.RateLimitService
@@ -181,6 +181,16 @@ class AuthEndpoint(
               OidcError("invalid_scope", Some("'openid' scope is required"), state = state)
             )
         } else {
+          // A client whose OBP Consumer sets grant types without authorization_code (e.g. client credentials
+          // only) cannot log a person in: refuse before the login form (see ClientGrantTypes).
+          authService.findClientByClientIdThatIsKey(clientId).flatMap {
+            case Some(registered) if !ClientGrantTypes.allows(registered, ClientGrantTypes.AuthorizationCode) =>
+              IO(logger.warn(s"Client $clientId may not use the authorization_code grant")) *>
+                redirectWithError(
+                  redirectUri,
+                  OidcError("unauthorized_client", Some(ClientGrantTypes.notAllowedDescription(registered, ClientGrantTypes.AuthorizationCode)), state = state)
+                )
+            case _ =>
                  (consentRequestId, consentId) match {
                    case (Some(crId), _) =>
                      // OBP consent-request flow: skip login form, redirect straight to Portal.
@@ -200,6 +210,7 @@ class AuthEndpoint(
                        storePendingAuthorization(clientId, redirectUri, scope, state, nonce, responseType, consentId)
                          .flatMap(pending => showLoginForm(pending))
                  }
+          }
         }
       }
   }

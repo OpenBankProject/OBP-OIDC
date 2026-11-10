@@ -105,10 +105,10 @@ else
   info "Dynamic Client Registration disabled"
 fi
 
-if [[ "${USE_VERIFY_ENDPOINTS:-false}" == "true" ]]; then
+if [[ "${USE_VERIFY_ENDPOINTS:-true}" == "true" ]]; then
   info "USE_VERIFY_ENDPOINTS=true (OBP API as source of truth)"
 else
-  info "USE_VERIFY_ENDPOINTS=false (DB views as source of truth)"
+  warn "USE_VERIFY_ENDPOINTS=false: reading OBP-API's SQL views is deprecated. Set USE_VERIFY_ENDPOINTS=true"
 fi
 
 token_exp="${OIDC_TOKEN_EXPIRATION:-3600}"

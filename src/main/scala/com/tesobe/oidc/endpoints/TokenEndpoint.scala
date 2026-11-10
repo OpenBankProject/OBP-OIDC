@@ -21,7 +21,7 @@ package com.tesobe.oidc.endpoints
 
 import cats.effect.IO
 import cats.syntax.all._
-import com.tesobe.oidc.auth.{AuthService, CodeService}
+import com.tesobe.oidc.auth.{AuthService, ClientGrantTypes, CodeService}
 import com.tesobe.oidc.models.{OidcError, TokenRequest, TokenResponse}
 import com.tesobe.oidc.tokens.JwtService
 import com.tesobe.oidc.config.OidcConfig
@@ -141,6 +141,33 @@ class TokenEndpoint(
     }
 
     println(s"DEBUG: About to match on parameters")
+    // A client whose OBP Consumer sets grant types gets tokens only for those (see ClientGrantTypes).
+    // client_credentials names its client in the Basic header or the form, like the other grants.
+    (grantType, resolvedClientId) match {
+      case (Some(gt), Some(clientIdValue)) if ClientGrantTypes.All.contains(gt) =>
+        authService.findClientByClientIdThatIsKey(clientIdValue).flatMap {
+          case Some(registered) if !ClientGrantTypes.allows(registered, gt) =>
+            logger.warn(s"Client $clientIdValue may not use the $gt grant (its grant types: ${registered.grant_types.mkString(", ")})")
+            BadRequest(OidcError("unauthorized_client", Some(ClientGrantTypes.notAllowedDescription(registered, gt))).asJson)
+          case _ => dispatchGrant(req, formData, grantType, code, redirectUri, basicCredentialsOpt, clientIdFromForm, clientSecretFromForm, resolvedClientId, refreshToken)
+        }
+      case _ => dispatchGrant(req, formData, grantType, code, redirectUri, basicCredentialsOpt, clientIdFromForm, clientSecretFromForm, resolvedClientId, refreshToken)
+    }
+  }
+
+  /** Issues the token for a grant the client may use. */
+  private def dispatchGrant(
+      req: Request[IO],
+      formData: Map[String, String],
+      grantType: Option[String],
+      code: Option[String],
+      redirectUri: Option[String],
+      basicCredentialsOpt: Option[(String, String)],
+      clientIdFromForm: Option[String],
+      clientSecretFromForm: Option[String],
+      resolvedClientId: Option[String],
+      refreshToken: Option[String]
+  ): IO[Response[IO]] = IO.defer {
     grantType match {
       case Some("authorization_code") =>
         // Build optional credentials tuple for validation when provided
@@ -499,8 +526,12 @@ class TokenEndpoint(
             OidcError("invalid_grant", Some("Client ID mismatch")).asJson
           )
         } else {
-          // Get user information
-          authService.getUserById(tokenClaims.sub).flatMap {
+          // Look the user up by provider and username when the token says which provider. Without a database
+          // this asks OBP-API, so a refresh works after a restart. Older tokens carry no provider.
+          (tokenClaims.provider match {
+            case Some(provider) => authService.getUserBySubAndProvider(tokenClaims.sub, provider)
+            case None           => authService.getUserById(tokenClaims.sub)
+          }).flatMap {
             case Some(user) =>
               logger.info(s"User found for refresh: ${user.username}")
 

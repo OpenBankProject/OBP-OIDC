@@ -348,6 +348,7 @@ class JwtServiceImpl(config: OidcConfig, keyPairRef: Ref[IO, KeyPair])
         .withClaim("azp", clientId)
         .withClaim("scope", scope)
         .withClaim("client_id", clientId)
+        .withClaim("provider", user.provider.getOrElse(config.issuer))
 
       // Carry the consent binding across token rotation: the refresh grant reads this
       // claim back and stamps it into the next access/refresh token pair.
@@ -461,7 +462,8 @@ class JwtServiceImpl(config: OidcConfig, keyPairRef: Ref[IO, KeyPair])
             jti = decodedJWT.getId,
             scope = decodedJWT.getClaim("scope").asString(),
             client_id = decodedJWT.getClaim("client_id").asString(),
-            consent_id = Option(decodedJWT.getClaim("consent_id").asString())
+            consent_id = Option(decodedJWT.getClaim("consent_id").asString()),
+            provider = Option(decodedJWT.getClaim("provider").asString())
           )
         } match {
           case Success(claims) => claims.asRight[OidcError]
