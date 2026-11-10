@@ -49,8 +49,7 @@ class MonitoringEndpointTest extends AnyFunSuite with Matchers with BeforeAndAft
       case req @ GET -> Root / "obp" / "v7.0.0" / "banks" / "SYS" / "my" / "roles" / role =>
         req.headers.get[Authorization] match {
           case Some(Authorization(Credentials.Token(_, "good"))) =>
-            if (roles.contains(role)) Ok(Json.obj("allowed_for_auth_modes" -> Json.arr(Json.fromString("UserXORApplication"))))
-            else Ok(Json.obj("allowed_for_auth_modes" -> Json.arr()))
+            Ok(Json.obj("allowed" -> Json.fromBoolean(roles.contains(role))))
           case _ => IO.pure(Response[IO](Status.Unauthorized))
         }
     }.orNotFound)
