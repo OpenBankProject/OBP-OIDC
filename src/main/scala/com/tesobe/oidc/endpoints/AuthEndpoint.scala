@@ -259,33 +259,6 @@ class AuthEndpoint(
       all.get(authRequestId).filter(p => p.exp >= now && cookieValue.contains(p.bindingToken))
     }
 
-  private def validateAuthInput(
-      username: String,
-      password: String,
-      provider: String
-  ): Either[String, (String, String, String)] = {
-    if (username.isEmpty || username.trim.isEmpty)
-      Left("Username cannot be empty")
-    else if (username.length < 8)
-      Left("Username must be at least 8 characters")
-    else if (username.length > 100)
-      Left("Username must not exceed 100 characters")
-    else if (password.isEmpty)
-      Left("Password cannot be empty")
-    else if (password.length < 10)
-      Left("Password must be at least 10 characters")
-    else if (password.length > 512)
-      Left("Password must not exceed 512 characters")
-    else if (provider.isEmpty || provider.trim.isEmpty)
-      Left("Provider cannot be empty")
-    else if (provider.length < 5)
-      Left("Provider must be at least 5 characters")
-    else if (provider.length > 512)
-      Left("Provider must not exceed 512 characters")
-    else
-      Right((username.trim, password, provider.trim))
-  }
-
   private def handleLoginSubmission(form: UrlForm): IO[Response[IO]] = {
     handleLoginSubmissionWithRequest(form, None)
   }
@@ -334,7 +307,7 @@ class AuthEndpoint(
       // Validate input lengths
       validatedInput <- IO
         .fromEither(
-          validateAuthInput(username, password, provider).left.map(errorMsg =>
+          AuthEndpoint.validateAuthInput(username, password, provider).left.map(errorMsg =>
             new RuntimeException(errorMsg)
           )
         )
@@ -1116,6 +1089,46 @@ class AuthEndpoint(
 }
 
 object AuthEndpoint {
+
+  /** Upper bounds for the login form fields. They stop oversized input from reaching the
+    * authentication service. The username bound is the size of OBP-API's username column
+    * (100 characters), so no stored username is longer.
+    */
+  val MaxUsernameLength: Int = 100
+  val MaxPasswordLength: Int = 512
+  val MaxProviderLength: Int = 512
+
+  /** Check the login form fields before they are used to authenticate.
+    *
+    * Only an empty field or an oversized one is refused. There is no minimum length:
+    * OBP-API and Keycloak apply their username and password rules when credentials are set,
+    * and users created before those rules, or with a short email as username, must still
+    * be able to sign in.
+    *
+    * The Left value says what was wrong, for the log only. It never contains the input.
+    * Users always see the same message as for a wrong password.
+    */
+  private[endpoints] def validateAuthInput(
+      username: String,
+      password: String,
+      provider: String
+  ): Either[String, (String, String, String)] = {
+    if (username.trim.isEmpty)
+      Left("Username is empty")
+    else if (username.length > MaxUsernameLength)
+      Left(s"Username is longer than $MaxUsernameLength characters")
+    else if (password.isEmpty)
+      Left("Password is empty")
+    else if (password.length > MaxPasswordLength)
+      Left(s"Password is longer than $MaxPasswordLength characters")
+    else if (provider.trim.isEmpty)
+      Left("Provider is empty")
+    else if (provider.length > MaxProviderLength)
+      Left(s"Provider is longer than $MaxProviderLength characters")
+    else
+      Right((username.trim, password, provider.trim))
+  }
+
   def apply(
       authService: AuthService[IO],
       codeService: CodeService[IO],
