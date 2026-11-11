@@ -82,9 +82,9 @@ When `LOCAL_DEVELOPMENT_MODE=true`:
    - **Scope**: `openid email profile` (or other valid scopes)
    - **State**: Optional state parameter
    - **Nonce**: Optional nonce parameter
-   - **Username**: Valid username (8-100 characters)
-   - **Password**: Valid password (10-512 characters)
-   - **Provider**: Valid authentication provider (5-512 characters)
+   - **Username**: Username (not empty, at most 100 characters)
+   - **Password**: Password (not empty, at most 512 characters)
+   - **Provider**: Authentication provider (not empty, at most 512 characters)
 3. Click "Sign In"
 4. On success, redirected to the redirect URI with authorization code
 
