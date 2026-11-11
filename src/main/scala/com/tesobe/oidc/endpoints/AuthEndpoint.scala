@@ -304,22 +304,6 @@ class AuthEndpoint(
       )
       _ <- IO(logger.info(s"Provider selected: '$provider'"))
 
-      // Validate input lengths
-      validatedInput <- IO
-        .fromEither(
-          AuthEndpoint.validateAuthInput(username, password, provider).left.map(errorMsg =>
-            new RuntimeException(errorMsg)
-          )
-        )
-        .handleErrorWith { error =>
-          IO(logger.warn(s"Input validation failed: ${error.getMessage}")) *>
-            IO(println(s"Input validation failed: ${error.getMessage}")) *>
-            IO.raiseError(error)
-        }
-      validUsername = validatedInput._1
-      validPassword = validatedInput._2
-      validProvider = validatedInput._3
-
       // The client, redirect_uri, scope, state, nonce and response_type come from the request that
       // GET /auth validated and stored, never from the posted form, which anyone can forge.
       pendingOpt <- formData.get("auth_request_id").filter(_.nonEmpty) match {
@@ -338,30 +322,17 @@ class AuthEndpoint(
             )
 
         case Some(pending) =>
-          for {
-            _ <- IO(logger.info(s"Calling authentication service for username: '$validUsername' with provider: '$validProvider'"))
-            authResult <- authService.authenticate(validUsername, validPassword, validProvider)
-            response <- authResult match {
-              case Right(user) =>
-                // Authentication successful - clear rate limit tracking; the pending request is used up
-                rateLimitService.recordSuccessfulLogin(ip, validUsername) *>
-                  pendingAuthorizationsRef.update(_ - pending.id) *>
-                  IO(logger.info(s"Authentication successful for user: ${user.sub}")) *>
-                  generateCodeForUser(
-                    user, pending.clientId, pending.redirectUri, pending.scope, pending.state, pending.nonce,
-                    pending.responseType, consentId = pending.consentId
-                  )
-              case Left(error) =>
-                // Authentication failed - record failed attempt for rate limiting, show the same request again
-                rateLimitService.checkAndRecordFailedAttempt(ip, validUsername) *>
-                  IO(
-                    logger.warn(
-                      s"Authentication failed for username: '$validUsername', provider: '$validProvider', error: ${error.error}, description: ${error.error_description.getOrElse("none")}"
-                    )
-                  ) *>
-                  showLoginForm(pending, Some("Incorrect username/password"))
-            }
-          } yield response
+          AuthEndpoint.validateAuthInput(username, password, provider) match {
+            case Left(reason) =>
+              // Treated like a wrong password: same message, same request, counted for rate limiting.
+              // The username is cut to the maximum length so the rate limiter never keeps oversized input.
+              val limitedUsername = username.take(AuthEndpoint.MaxUsernameLength)
+              rateLimitService.checkAndRecordFailedAttempt(ip, limitedUsername) *>
+                IO(logger.warn(s"Login form input refused before authentication: $reason")) *>
+                showLoginForm(pending, Some("Incorrect username/password"))
+            case Right((validUsername, validPassword, validProvider)) =>
+              authenticateForPending(pending, ip, validUsername, validPassword, validProvider)
+          }
       }
     } yield response
   }.handleErrorWith { error =>
@@ -371,6 +342,39 @@ class AuthEndpoint(
     )
     BadRequest("Invalid form data. Please try again.")
   }
+
+  /** Authenticate checked login form input for a pending authorization request. */
+  private def authenticateForPending(
+      pending: PendingAuthorization,
+      ip: String,
+      validUsername: String,
+      validPassword: String,
+      validProvider: String
+  ): IO[Response[IO]] =
+    for {
+      _ <- IO(logger.info(s"Calling authentication service for username: '$validUsername' with provider: '$validProvider'"))
+      authResult <- authService.authenticate(validUsername, validPassword, validProvider)
+      response <- authResult match {
+        case Right(user) =>
+          // Authentication successful - clear rate limit tracking; the pending request is used up
+          rateLimitService.recordSuccessfulLogin(ip, validUsername) *>
+            pendingAuthorizationsRef.update(_ - pending.id) *>
+            IO(logger.info(s"Authentication successful for user: ${user.sub}")) *>
+            generateCodeForUser(
+              user, pending.clientId, pending.redirectUri, pending.scope, pending.state, pending.nonce,
+              pending.responseType, consentId = pending.consentId
+            )
+        case Left(error) =>
+          // Authentication failed - record failed attempt for rate limiting, show the same request again
+          rateLimitService.checkAndRecordFailedAttempt(ip, validUsername) *>
+            IO(
+              logger.warn(
+                s"Authentication failed for username: '$validUsername', provider: '$validProvider', error: ${error.error}, description: ${error.error_description.getOrElse("none")}"
+              )
+            ) *>
+            showLoginForm(pending, Some("Incorrect username/password"))
+      }
+    } yield response
 
   /** The standalone test page (/obp-oidc/test-login, local development mode only) posts the client
     * and redirect_uri itself rather than going through GET /auth. They are validated here exactly as
