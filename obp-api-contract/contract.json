@@ -1,0 +1,261 @@
+{
+ "about": "Every OBP-API call OBP-OIDC makes: verb, path (OBP placeholders in capitals), the source file and the text that makes the call (needles), and the response fields the code reads. OBP-OIDC decodes most answers with circe, so every field a decoder requires is listed as a read, together with the optional fields the code uses. src/test/scala/com/tesobe/oidc/ObpApiContractTest.scala checks this list against the source and against snapshot.json, which obp-api-contract/snapshot.py writes from an OBP-API's resource docs. A call made from two files is listed once per file. OBP-OIDC builds no OBP-API path from user input. Not covered: OBP-OIDC can also read users and clients straight from Postgres views (v_oidc_users, v_oidc_clients, v_oidc_admin_clients) through doobie; that is not an HTTP contract and these tests do not check it.",
+ "calls": [
+  {
+   "verb": "POST",
+   "path": "/obp/v6.0.0/my/logins/direct",
+   "source": "src/main/scala/com/tesobe/oidc/auth/ObpApiCredentialsService.scala",
+   "needles": [
+    "/obp/v6.0.0/my/logins/direct\""
+   ],
+   "reads": [
+    "token"
+   ],
+   "note": "DirectLogin with the OIDC operator user (OBP_API_USERNAME); every other call sends the token."
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v6.0.0/users/verify-credentials",
+   "source": "src/main/scala/com/tesobe/oidc/auth/ObpApiCredentialsService.scala",
+   "needles": [
+    "/obp/v6.0.0/users/verify-credentials\""
+   ],
+   "reads": [
+    "user_id",
+    "username",
+    "provider",
+    "email",
+    "first_name",
+    "last_name",
+    "is_validated"
+   ],
+   "note": "Decoded into VerifyCredentialsResponse: user_id, username and provider are required; the rest are optional. On a 400 it shows the error's message."
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v6.0.0/providers",
+   "source": "src/main/scala/com/tesobe/oidc/auth/ObpApiCredentialsService.scala",
+   "needles": [
+    "/obp/v6.0.0/providers\""
+   ],
+   "reads": [
+    "providers"
+   ],
+   "note": "Read as a list of strings."
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v6.0.0/users/provider/PROVIDER/username/USERNAME",
+   "source": "src/main/scala/com/tesobe/oidc/auth/ObpApiCredentialsService.scala",
+   "needles": [
+    "/obp/v6.0.0/users/provider\") / provider / \"username\" / username"
+   ],
+   "reads": [
+    "user_id",
+    "username",
+    "provider",
+    "email"
+   ],
+   "note": "user_id, username and provider are required; email is optional."
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v7.0.0/oidc/consents/CONSENT_ID",
+   "source": "src/main/scala/com/tesobe/oidc/auth/ObpApiCredentialsService.scala",
+   "needles": [
+    "/obp/v7.0.0/oidc/consents\") / consentId"
+   ],
+   "reads": [
+    "consent_id",
+    "status",
+    "consent_request_id",
+    "consumer_id",
+    "client_id",
+    "user_id",
+    "username",
+    "provider"
+   ],
+   "note": "consent_request_id and client_id may be null; the consent callback compares both with the login it started."
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v6.0.0/my/entitlements",
+   "source": "src/main/scala/com/tesobe/oidc/auth/ObpApiCredentialsService.scala",
+   "needles": [
+    "/obp/v6.0.0/my/entitlements\""
+   ],
+   "reads": [
+    "list[].role_name",
+    "list[].bank_id"
+   ],
+   "note": "Decoded into EntitlementInfo, so both fields are required. Called by checkRequiredRoles and checkUserRole."
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v6.0.0/root",
+   "source": "src/main/scala/com/tesobe/oidc/auth/ObpApiCredentialsService.scala",
+   "needles": [
+    "/obp/v6.0.0/root\""
+   ],
+   "reads": [],
+   "note": "Reachability only: OBP-OIDC reads the status code, not the body."
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v6.0.0/my/logins/direct",
+   "source": "src/main/scala/com/tesobe/oidc/auth/ObpApiClientService.scala",
+   "needles": [
+    "/obp/v6.0.0/my/logins/direct\""
+   ],
+   "reads": [
+    "token"
+   ]
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v6.0.0/oidc/clients/verify",
+   "source": "src/main/scala/com/tesobe/oidc/auth/ObpApiClientService.scala",
+   "needles": [
+    "/obp/v6.0.0/oidc/clients/verify\""
+   ],
+   "reads": [
+    "valid",
+    "client_id",
+    "consumer_id",
+    "redirect_uris",
+    "grant_types"
+   ],
+   "note": "Decoded into VerifyClientResponse: valid is required; the rest are optional. On a 400 it shows the error's message."
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v6.0.0/oidc/clients/CLIENT_ID",
+   "source": "src/main/scala/com/tesobe/oidc/auth/ObpApiClientService.scala",
+   "needles": [
+    "/obp/v6.0.0/oidc/clients/$clientId\""
+   ],
+   "reads": [
+    "client_id",
+    "client_name",
+    "consumer_id",
+    "redirect_uris",
+    "enabled",
+    "grant_types"
+   ],
+   "note": "Decoded into GetClientResponse: every field except grant_types is required, so a missing one makes the client unknown."
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v6.0.0/management/consumers",
+   "source": "src/main/scala/com/tesobe/oidc/auth/ObpApiClientService.scala",
+   "needles": [
+    "/obp/v6.0.0/management/consumers\""
+   ],
+   "reads": [
+    "consumers[].consumer_id",
+    "consumers[].app_name",
+    "consumers[].consumer_key",
+    "consumers[].redirect_url",
+    "consumers[].enabled",
+    "consumers[].created"
+   ],
+   "note": "Decoded into ConsumerJson: redirect_url and created are optional, the rest required."
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v5.1.0/management/consumers",
+   "source": "src/main/scala/com/tesobe/oidc/auth/ObpApiClientService.scala",
+   "needles": [
+    "/obp/v5.1.0/management/consumers\""
+   ],
+   "reads": [
+    "consumer_id",
+    "consumer_key",
+    "consumer_secret",
+    "app_name",
+    "app_type",
+    "description",
+    "developer_email",
+    "redirect_url",
+    "enabled",
+    "company"
+   ],
+   "note": "Decoded into CreateConsumerResponse: all ten fields are required."
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v6.0.0/my/entitlements",
+   "source": "src/main/scala/com/tesobe/oidc/auth/ObpApiClientService.scala",
+   "needles": [
+    "/obp/v6.0.0/my/entitlements\""
+   ],
+   "reads": [
+    "list[].role_name",
+    "list[].bank_id"
+   ],
+   "note": "Decoded into EntitlementInfo, so both fields are required."
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v6.0.0/providers",
+   "source": "src/main/scala/com/tesobe/oidc/status/StatusService.scala",
+   "needles": [
+    "\"/obp/v6.0.0/providers\","
+   ],
+   "reads": [],
+   "note": "A status page probe: OBP-OIDC sends a deliberately invalid request and reads only the status code (and, on a 404, whether the body carries OBP-10404 or no OBP- code at all)."
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v6.0.0/users/verify-credentials",
+   "source": "src/main/scala/com/tesobe/oidc/status/StatusService.scala",
+   "needles": [
+    "\"/obp/v6.0.0/users/verify-credentials\","
+   ],
+   "reads": [],
+   "note": "A status page probe: OBP-OIDC sends a deliberately invalid request and reads only the status code (and, on a 404, whether the body carries OBP-10404 or no OBP- code at all)."
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v6.0.0/users/provider/PROVIDER/username/USERNAME",
+   "source": "src/main/scala/com/tesobe/oidc/status/StatusService.scala",
+   "needles": [
+    "\"/obp/v6.0.0/users/provider/__obp_oidc_status__/username/__obp_oidc_status__\","
+   ],
+   "reads": [],
+   "note": "A status page probe: OBP-OIDC sends a deliberately invalid request and reads only the status code (and, on a 404, whether the body carries OBP-10404 or no OBP- code at all)."
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v6.0.0/oidc/clients/verify",
+   "source": "src/main/scala/com/tesobe/oidc/status/StatusService.scala",
+   "needles": [
+    "\"/obp/v6.0.0/oidc/clients/verify\","
+   ],
+   "reads": [],
+   "note": "A status page probe: OBP-OIDC sends a deliberately invalid request and reads only the status code (and, on a 404, whether the body carries OBP-10404 or no OBP- code at all)."
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v5.1.0/management/consumers",
+   "source": "src/main/scala/com/tesobe/oidc/status/StatusService.scala",
+   "needles": [
+    "\"/obp/v5.1.0/management/consumers\","
+   ],
+   "reads": [],
+   "note": "A status page probe: OBP-OIDC sends a deliberately invalid request and reads only the status code (and, on a 404, whether the body carries OBP-10404 or no OBP- code at all)."
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v7.0.0/banks/SYS/my/roles/ROLE_NAME",
+   "source": "src/main/scala/com/tesobe/oidc/monitoring/ObpRoleCheck.scala",
+   "needles": [
+    "/obp/v7.0.0/banks/SYS/my/roles/${Uri.pathEncode(role)}\""
+   ],
+   "reads": [
+    "allowed"
+   ],
+   "note": "Sent with the caller's Bearer token to guard the monitoring endpoints."
+  }
+ ]
+}
