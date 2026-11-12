@@ -29,7 +29,12 @@
     "last_name",
     "is_validated"
    ],
-   "note": "Decoded into VerifyCredentialsResponse: user_id, username and provider are required; the rest are optional. On a 400 it shows the error's message."
+   "note": "Decoded into VerifyCredentialsResponse: user_id, username and provider are required; the rest are optional. OBP-API answers with JSONFactory200.createUserJSON, which has no first_name, last_name or is_validated (checked against OBP-API develop 474d4bc, 2026-11-13), so the user gets no name and no email_verified. On a 400 it shows the error's message.",
+   "undocumented_fields": [
+    "first_name",
+    "last_name",
+    "is_validated"
+   ]
   },
   {
    "verb": "GET",
@@ -125,7 +130,10 @@
     "redirect_uris",
     "grant_types"
    ],
-   "note": "Decoded into VerifyClientResponse: valid is required; the rest are optional. On a 400 it shows the error's message."
+   "note": "Decoded into VerifyClientResponse: valid is required; the rest are optional. OBP-API does not return grant_types yet (develop 474d4bc, 2026-11-13); without it OBP-OIDC allows every grant. On a 400 it shows the error's message.",
+   "undocumented_fields": [
+    "grant_types"
+   ]
   },
   {
    "verb": "GET",
@@ -142,7 +150,10 @@
     "enabled",
     "grant_types"
    ],
-   "note": "Decoded into GetClientResponse: every field except grant_types is required, so a missing one makes the client unknown."
+   "note": "Decoded into GetClientResponse: every field except grant_types is required, so a missing one makes the client unknown. OBP-API does not return grant_types yet (develop 474d4bc, 2026-11-13); without it OBP-OIDC allows every grant.",
+   "undocumented_fields": [
+    "grant_types"
+   ]
   },
   {
    "verb": "GET",
@@ -255,7 +266,10 @@
    "reads": [
     "allowed"
    ],
-   "note": "Sent with the caller's Bearer token to guard the monitoring endpoints."
+   "note": "Sent with the caller's Bearer token to guard the monitoring endpoints. OBP-OIDC reads a yes-or-no field, allowed, that OBP-API is to answer with once it drops auth modes. OBP-API develop 474d4bc (2026-11-13) still answers with allowed_for_auth_modes and no allowed, so OBP-OIDC refuses every token there. When OBP-API documents allowed, drop it from undocumented_fields.",
+   "undocumented_fields": [
+    "allowed"
+   ]
   }
  ]
 }
