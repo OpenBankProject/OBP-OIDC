@@ -259,33 +259,6 @@ class AuthEndpoint(
       all.get(authRequestId).filter(p => p.exp >= now && cookieValue.contains(p.bindingToken))
     }
 
-  private def validateAuthInput(
-      username: String,
-      password: String,
-      provider: String
-  ): Either[String, (String, String, String)] = {
-    if (username.isEmpty || username.trim.isEmpty)
-      Left("Username cannot be empty")
-    else if (username.length < 8)
-      Left("Username must be at least 8 characters")
-    else if (username.length > 100)
-      Left("Username must not exceed 100 characters")
-    else if (password.isEmpty)
-      Left("Password cannot be empty")
-    else if (password.length < 10)
-      Left("Password must be at least 10 characters")
-    else if (password.length > 512)
-      Left("Password must not exceed 512 characters")
-    else if (provider.isEmpty || provider.trim.isEmpty)
-      Left("Provider cannot be empty")
-    else if (provider.length < 5)
-      Left("Provider must be at least 5 characters")
-    else if (provider.length > 512)
-      Left("Provider must not exceed 512 characters")
-    else
-      Right((username.trim, password, provider.trim))
-  }
-
   private def handleLoginSubmission(form: UrlForm): IO[Response[IO]] = {
     handleLoginSubmissionWithRequest(form, None)
   }
@@ -331,22 +304,6 @@ class AuthEndpoint(
       )
       _ <- IO(logger.info(s"Provider selected: '$provider'"))
 
-      // Validate input lengths
-      validatedInput <- IO
-        .fromEither(
-          validateAuthInput(username, password, provider).left.map(errorMsg =>
-            new RuntimeException(errorMsg)
-          )
-        )
-        .handleErrorWith { error =>
-          IO(logger.warn(s"Input validation failed: ${error.getMessage}")) *>
-            IO(println(s"Input validation failed: ${error.getMessage}")) *>
-            IO.raiseError(error)
-        }
-      validUsername = validatedInput._1
-      validPassword = validatedInput._2
-      validProvider = validatedInput._3
-
       // The client, redirect_uri, scope, state, nonce and response_type come from the request that
       // GET /auth validated and stored, never from the posted form, which anyone can forge.
       pendingOpt <- formData.get("auth_request_id").filter(_.nonEmpty) match {
@@ -365,30 +322,17 @@ class AuthEndpoint(
             )
 
         case Some(pending) =>
-          for {
-            _ <- IO(logger.info(s"Calling authentication service for username: '$validUsername' with provider: '$validProvider'"))
-            authResult <- authService.authenticate(validUsername, validPassword, validProvider)
-            response <- authResult match {
-              case Right(user) =>
-                // Authentication successful - clear rate limit tracking; the pending request is used up
-                rateLimitService.recordSuccessfulLogin(ip, validUsername) *>
-                  pendingAuthorizationsRef.update(_ - pending.id) *>
-                  IO(logger.info(s"Authentication successful for user: ${user.sub}")) *>
-                  generateCodeForUser(
-                    user, pending.clientId, pending.redirectUri, pending.scope, pending.state, pending.nonce,
-                    pending.responseType, consentId = pending.consentId
-                  )
-              case Left(error) =>
-                // Authentication failed - record failed attempt for rate limiting, show the same request again
-                rateLimitService.checkAndRecordFailedAttempt(ip, validUsername) *>
-                  IO(
-                    logger.warn(
-                      s"Authentication failed for username: '$validUsername', provider: '$validProvider', error: ${error.error}, description: ${error.error_description.getOrElse("none")}"
-                    )
-                  ) *>
-                  showLoginForm(pending, Some("Incorrect username/password"))
-            }
-          } yield response
+          AuthEndpoint.validateAuthInput(username, password, provider) match {
+            case Left(reason) =>
+              // Treated like a wrong password: same message, same request, counted for rate limiting.
+              // The username is cut to the maximum length so the rate limiter never keeps oversized input.
+              val limitedUsername = username.take(AuthEndpoint.MaxUsernameLength)
+              rateLimitService.checkAndRecordFailedAttempt(ip, limitedUsername) *>
+                IO(logger.warn(s"Login form input refused before authentication: $reason")) *>
+                showLoginForm(pending, Some("Incorrect username/password"))
+            case Right((validUsername, validPassword, validProvider)) =>
+              authenticateForPending(pending, ip, validUsername, validPassword, validProvider)
+          }
       }
     } yield response
   }.handleErrorWith { error =>
@@ -398,6 +342,39 @@ class AuthEndpoint(
     )
     BadRequest("Invalid form data. Please try again.")
   }
+
+  /** Authenticate checked login form input for a pending authorization request. */
+  private def authenticateForPending(
+      pending: PendingAuthorization,
+      ip: String,
+      validUsername: String,
+      validPassword: String,
+      validProvider: String
+  ): IO[Response[IO]] =
+    for {
+      _ <- IO(logger.info(s"Calling authentication service for username: '$validUsername' with provider: '$validProvider'"))
+      authResult <- authService.authenticate(validUsername, validPassword, validProvider)
+      response <- authResult match {
+        case Right(user) =>
+          // Authentication successful - clear rate limit tracking; the pending request is used up
+          rateLimitService.recordSuccessfulLogin(ip, validUsername) *>
+            pendingAuthorizationsRef.update(_ - pending.id) *>
+            IO(logger.info(s"Authentication successful for user: ${user.sub}")) *>
+            generateCodeForUser(
+              user, pending.clientId, pending.redirectUri, pending.scope, pending.state, pending.nonce,
+              pending.responseType, consentId = pending.consentId
+            )
+        case Left(error) =>
+          // Authentication failed - record failed attempt for rate limiting, show the same request again
+          rateLimitService.checkAndRecordFailedAttempt(ip, validUsername) *>
+            IO(
+              logger.warn(
+                s"Authentication failed for username: '$validUsername', provider: '$validProvider', error: ${error.error}, description: ${error.error_description.getOrElse("none")}"
+              )
+            ) *>
+            showLoginForm(pending, Some("Incorrect username/password"))
+      }
+    } yield response
 
   /** The standalone test page (/obp-oidc/test-login, local development mode only) posts the client
     * and redirect_uri itself rather than going through GET /auth. They are validated here exactly as
@@ -1116,6 +1093,46 @@ class AuthEndpoint(
 }
 
 object AuthEndpoint {
+
+  /** Upper bounds for the login form fields. They stop oversized input from reaching the
+    * authentication service. The username bound is the size of OBP-API's username column
+    * (100 characters), so no stored username is longer.
+    */
+  val MaxUsernameLength: Int = 100
+  val MaxPasswordLength: Int = 512
+  val MaxProviderLength: Int = 512
+
+  /** Check the login form fields before they are used to authenticate.
+    *
+    * Only an empty field or an oversized one is refused. There is no minimum length:
+    * OBP-API and Keycloak apply their username and password rules when credentials are set,
+    * and users created before those rules, or with a short email as username, must still
+    * be able to sign in.
+    *
+    * The Left value says what was wrong, for the log only. It never contains the input.
+    * Users always see the same message as for a wrong password.
+    */
+  private[endpoints] def validateAuthInput(
+      username: String,
+      password: String,
+      provider: String
+  ): Either[String, (String, String, String)] = {
+    if (username.trim.isEmpty)
+      Left("Username is empty")
+    else if (username.length > MaxUsernameLength)
+      Left(s"Username is longer than $MaxUsernameLength characters")
+    else if (password.isEmpty)
+      Left("Password is empty")
+    else if (password.length > MaxPasswordLength)
+      Left(s"Password is longer than $MaxPasswordLength characters")
+    else if (provider.trim.isEmpty)
+      Left("Provider is empty")
+    else if (provider.length > MaxProviderLength)
+      Left(s"Provider is longer than $MaxProviderLength characters")
+    else
+      Right((username.trim, password, provider.trim))
+  }
+
   def apply(
       authService: AuthService[IO],
       codeService: CodeService[IO],

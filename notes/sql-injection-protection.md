@@ -42,9 +42,9 @@ All user-supplied inputs from the `/obp-oidc/auth` login form are protected:
 
 | Input Field    | Protection Method                                                | Location                                                                                   |
 | -------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `username`     | Input validation (8-100 chars) + Parameterized query             | `AuthEndpoint.validateAuthInput()` + `DatabaseAuthService.findUserByUsernameAndProvider()` |
-| `password`     | Input validation (10-512 chars) + BCrypt comparison (not in SQL) | `AuthEndpoint.validateAuthInput()` + `DatabaseAuthService.authenticate()`                  |
-| `provider`     | Input validation (5-512 chars) + Parameterized query             | `AuthEndpoint.validateAuthInput()` + `DatabaseAuthService.findUserByUsernameAndProvider()` |
+| `username`     | Not empty, at most 100 chars + Parameterized query               | `AuthEndpoint.validateAuthInput()` + `DatabaseAuthService.findUserByUsernameAndProvider()` |
+| `password`     | Not empty, at most 512 chars + BCrypt comparison (not in SQL)    | `AuthEndpoint.validateAuthInput()` + `DatabaseAuthService.authenticate()`                  |
+| `provider`     | Not empty, at most 512 chars + Parameterized query               | `AuthEndpoint.validateAuthInput()` + `DatabaseAuthService.findUserByUsernameAndProvider()` |
 | `client_id`    | Parameterized query                                              | `DatabaseAuthService.findClientById()`                                                     |
 | `redirect_uri` | Whitelist validation (not directly in SQL)                       | `DatabaseAuthService.validateClient()`                                                     |
 
@@ -69,11 +69,21 @@ SELECT * FROM v_oidc_users WHERE username = ? AND provider = ?
 
 ## Additional Security Measures
 
-1. **Input Length Validation**: All authentication inputs are validated before processing:
-   - Username: 8-100 characters
-   - Password: 10-512 characters
-   - Provider: 5-512 characters
-   - This prevents DoS attacks via oversized inputs and ensures database compatibility
+1. **Input Length Validation**: All authentication inputs are checked before they are used:
+   - Username: not empty, at most 100 characters (the size of OBP-API's username column)
+   - Password: not empty, at most 512 characters
+   - Provider: not empty, at most 512 characters
+   - The upper bounds stop oversized input (DoS) before it reaches the database or OBP-API.
+   - There is no minimum length. A minimum adds no protection against SQL injection or DoS, and it
+     would lock out existing users whose username or password is short. Length and strength rules
+     belong where a username or password is set, and that is where they are enforced: OBP-API
+     requires a username of 8 to 100 characters or an email address, and a strong password, when a
+     user is created or a password is set. Keycloak applies its password policy when a credential is
+     created, and at login checks only that the fields are not empty. Users created before these
+     rules, or with a short email address as username, can still sign in.
+   - Input that fails this check is treated like a wrong password: the login form is shown again
+     for the same request with "Incorrect username/password", and the attempt counts towards rate
+     limiting. The authentication service is not called.
 
 2. **Read-Only Database User**: The main `oidc_user` database account has read-only access to views, limiting potential damage from any hypothetical SQL injection.
 
@@ -113,12 +123,14 @@ From `pom.xml`:
 
 ## Conclusion
 
-**SQL injection protection is complete** through Doobie's parameterized queries. **Input validation is implemented** to prevent denial-of-service attacks and ensure data fits within database constraints. Together, these provide defense-in-depth security without breaking legitimate use cases.
+**SQL injection protection is complete** through Doobie's parameterized queries. **Upper length bounds** stop oversized input before it is used. Together, these provide defense-in-depth security without breaking legitimate use cases, including existing users with short credentials.
+
+With the default `USE_VERIFY_ENDPOINTS=true`, OBP-OIDC opens no database connection: the username, password and provider are sent to OBP-API at `POST /obp/v6.0.0/users/verify-credentials`, and OBP-API checks them.
 
 ### Key Points:
 
 - ✅ Parameterized queries prevent SQL injection (no sanitization needed)
-- ✅ Length validation prevents DoS and ensures database compatibility
+- ✅ Upper length bounds prevent DoS; there are no minimum lengths at login
 - ✅ Legitimate characters (including `'`, `"`, etc.) are allowed
 - ✅ Business logic validation is separate from SQL injection protection
 
