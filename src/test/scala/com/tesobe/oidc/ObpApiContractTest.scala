@@ -119,6 +119,58 @@ class ObpApiContractTest extends AnyFlatSpec with Matchers {
     problems shouldBe empty
   }
 
+  "Every field the code decodes" should "be in the reads of its call" in {
+    // `reads` is written by hand. This keeps it from drifting from the decoders: every field of a case
+    // class that circe decodes, and every field read by name with `get[T]("field")` or `downField("field")`,
+    // must be listed in the reads of the call it belongs to. It does not check optionality or types.
+    val missing = for {
+      (file, caseClass, callSource, callKey, prefix) <- DecodedBy
+      call <- calls.filter(c => c.source == callSource && c.key == callKey)
+      field <- caseClassFields(read(new File(repoRoot, file)), caseClass)
+      if !call.reads.flatMap(_.split('|')).contains(prefix + field)
+    } yield s"${call.source.split('/').last} ${call.key}: $caseClass.$field is decoded, not in reads"
+    missing shouldBe empty
+
+    val unlisted = for {
+      call <- calls.map(_.source).distinct
+      field <- namedFields(read(new File(repoRoot, call)))
+      if !NotReads.contains((call, field))
+      if !calls.filter(_.source == call).flatMap(_.reads).flatMap(_.split('|')).exists(r =>
+        r.split('.').last == field || r.startsWith(field + "[]")
+      )
+    } yield s"$call: $field is read by name, not in any reads"
+    unlisted shouldBe empty
+  }
+
+  it should "not be missing from the check itself" in {
+    // The decoded case classes must still be where DecodedBy says, and NotReads must still be needed.
+    val gone = DecodedBy.collect {
+      case (file, caseClass, _, _, _) if caseClassFields(read(new File(repoRoot, file)), caseClass).isEmpty =>
+        s"$file: case class $caseClass"
+    }
+    gone shouldBe empty
+    val stale = NotReads.keys.filterNot { case (file, field) =>
+      namedFields(read(new File(repoRoot, file))).contains(field)
+    }
+    stale shouldBe empty
+  }
+
+  it should "find case class fields and fields read by name" in {
+    val source =
+      """case class A(
+        |    one: String,
+        |    // not a field: Int,
+        |    two: Option[List[String]] = None
+        |)
+        |val x = json.hcursor.get[Option[String]]("three")
+        |  .get[String]("four")
+        |val y = body.hcursor.downField("five").as[Boolean]
+        |val z = cursor.get[List[B]]("six")""".stripMargin
+    caseClassFields(source, "A") shouldBe List("one", "two")
+    caseClassFields(source, "B") shouldBe Nil
+    namedFields(source) shouldBe List("three", "four", "five", "six")
+  }
+
   "The path scan" should "see a path built in pieces" in {
     buildsObpPath("""val a = "/obp/" + "v6.0.0" + "/banks"""") shouldBe true
     buildsObpPath("""val u = Uri.unsafeFromString(base) / "obp" / "v6.0.0" / "banks"""") shouldBe true
@@ -170,6 +222,45 @@ object ObpApiContractTest {
     ("src/main/scala/com/tesobe/oidc/status/StatusService.scala", "val endpoint = s\"${baseUrl.stripSuffix(\"/\")}/obp/v6.0.0/root\"") ->
       "The URL the status page shows; ObpApiCredentialsService.checkObpApiRoot makes the call."
   )
+
+  /** (file with the case class, case class, source file of the call, the call, prefix of its fields in
+    * `reads`): the case classes circe derives a decoder for, and the call each is decoded from.
+    */
+  private val Client = "src/main/scala/com/tesobe/oidc/auth/ObpApiClientService.scala"
+  private val Credentials = "src/main/scala/com/tesobe/oidc/auth/ObpApiCredentialsService.scala"
+  val DecodedBy: List[(String, String, String, String, String)] = List(
+    (Credentials, "VerifyCredentialsResponse", Credentials, "POST /obp/v6.0.0/users/verify-credentials", ""),
+    (Credentials, "DirectLoginResponse", Credentials, "POST /obp/v6.0.0/my/logins/direct", ""),
+    (Credentials, "EntitlementInfo", Credentials, "GET /obp/v6.0.0/my/entitlements", "list[]."),
+    (Credentials, "EntitlementInfo", Client, "GET /obp/v6.0.0/my/entitlements", "list[]."),
+    (Client, "VerifyClientResponse", Client, "POST /obp/v6.0.0/oidc/clients/verify", ""),
+    (Client, "GetClientResponse", Client, "GET /obp/v6.0.0/oidc/clients/CLIENT_ID", ""),
+    (Client, "ConsumerJson", Client, "GET /obp/v6.0.0/management/consumers", "consumers[]."),
+    (Client, "CreateConsumerResponse", Client, "POST /obp/v5.1.0/management/consumers", "")
+  )
+
+  /** (file, field) -> why a field read by name is not a read of an OBP-API answer. */
+  val NotReads: Map[(String, String), String] = Map(
+    (Credentials, "message") -> "The message of an OBP-API error body, shown when a call fails.",
+    (Client, "message") -> "The message of an OBP-API error body, shown when a call fails."
+  )
+
+  private val FieldName = """^\s*(\w+)\s*:""".r
+  private val NamedField = """(?:\bget\[[^(]*\]|\bdownField)\("(\w+)"\)""".r
+
+  /** The fields of `case class name(...)` in `source`, in order, without comment lines; Nil if absent. */
+  def caseClassFields(source: String, name: String): List[String] = {
+    val start = source.indexOf(s"case class $name(")
+    if (start < 0) Nil
+    else {
+      val body = source.substring(start).linesIterator.drop(1).takeWhile(l => !l.trim.startsWith(")")).toList
+      body.filterNot(_.trim.startsWith("//")).flatMap(l => FieldName.findFirstMatchIn(l).map(_.group(1)))
+    }
+  }
+
+  /** The names in `get[T]("name")` and `downField("name")` in `source`, in order, outside comments. */
+  def namedFields(source: String): List[String] =
+    NamedField.findAllMatchIn(source.linesIterator.filterNot(_.trim.startsWith("//")).mkString("\n")).map(_.group(1)).toList
 
   final case class Call(
       verb: String,
