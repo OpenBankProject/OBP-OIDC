@@ -30,7 +30,7 @@ import scala.jdk.CollectionConverters._
 /** Every path OBP-OIDC sends to OBP-API uses v5.1.0 or newer.
   *
   * OBP-API deployments can switch off the versions below v5.1.0. This test reads the sources and the
-  * dev scripts and fails on any `obp/vX.Y.Z` below v5.1.0 that is not listed in [[ObpApiVersionTest.BelowV510]],
+  * dev scripts and fails on any `vX.Y.Z` below v5.1.0 (also one that stands alone in a literal, as in a path built in pieces) that is not listed in [[ObpApiVersionTest.BelowV510]],
   * so a new call on an old version cannot slip in.
   */
 class ObpApiVersionTest extends AnyFlatSpec with Matchers {
@@ -62,6 +62,16 @@ class ObpApiVersionTest extends AnyFlatSpec with Matchers {
     versionsBelowV510("/obp/v6.0.0/root and /obp/v7.0.0/oidc/consents") shouldBe empty
     versionsBelowV510("/obp/dynamic-entity/x") shouldBe empty
   }
+
+  it should "find an old version written apart from obp" in {
+    versionsBelowV510("""val p = "/obp/" + "v4.0.0" + "/banks"""") shouldBe List("v4.0.0")
+    versionsBelowV510("""Root / "obp" / "v3.1.0" / "banks"""") shouldBe List("v3.1.0")
+    versionsBelowV510("""val version = "v1.2.1"""") shouldBe List("v1.2.1")
+    versionsBelowV510("""s"$base/obp/$version"""") shouldBe empty
+    versionsBelowV510("""Root / "obp" / "v5.1.0" / "banks"""") shouldBe empty
+    versionsBelowV510("""Root / "obp" / "v7.0.0" / "banks"""") shouldBe empty
+    versionsBelowV510("""pdfbox 2.0.0 and a1v2.3.4""") shouldBe empty
+  }
 }
 
 object ObpApiVersionTest {
@@ -81,7 +91,11 @@ object ObpApiVersionTest {
   /** This file, whose examples name old versions on purpose. */
   private val ThisFile = "src/test/scala/com/tesobe/oidc/ObpApiVersionTest.scala"
 
-  private val ObpVersion = """obp/v(\d+)\.(\d+)\.(\d+)""".r
+  /** A version token `vX.Y.Z`, with the `obp/` before it when written together. The token alone is
+    * enough: a path assembled from pieces (`"/obp/" + "v4.0.0"`, `/ "obp" / "v3.1.0"`) has no
+    * contiguous `obp/vX.Y.Z`.
+    */
+  private val ObpVersion = """(?<![A-Za-z0-9_.])(?:obp/)?v(\d+)\.(\d+)\.(\d+)(?![0-9])""".r
 
   /** The repository root: the nearest directory, from where the tests run, that holds pom.xml and src. */
   lazy val repoRoot: File = {
@@ -110,7 +124,7 @@ object ObpApiVersionTest {
     walk(new File(repoRoot, SourceRoot)) ++
       Option(repoRoot.listFiles()).toList.flatten.filter(f => f.isFile && RootFiles(f.getName)).sortBy(_.getName)
 
-  /** Every `obp/vX.Y.Z` in `line` whose version is below v5.1.0, as written. */
+  /** Every `vX.Y.Z` (with its `obp/` when present) in `line` whose version is below v5.1.0, as written. */
   def versionsBelowV510(line: String): List[String] =
     ObpVersion
       .findAllMatchIn(line)

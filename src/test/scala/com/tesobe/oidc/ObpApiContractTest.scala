@@ -119,6 +119,25 @@ class ObpApiContractTest extends AnyFlatSpec with Matchers {
     problems shouldBe empty
   }
 
+  "The path scan" should "see a path built in pieces" in {
+    buildsObpPath("""val a = "/obp/" + "v6.0.0" + "/banks"""") shouldBe true
+    buildsObpPath("""val u = Uri.unsafeFromString(base) / "obp" / "v6.0.0" / "banks"""") shouldBe true
+    buildsObpPath("""val u = s"${base}/obp" + "/v6.0.0/banks"""") shouldBe true
+    buildsObpPath("""val v = "v6.0.0"""") shouldBe true
+    buildsObpPath("""val u = s"$base/obp/$version/banks"""") shouldBe true
+    buildsObpPath("""val u = s"$base/obp/v6.0.0/banks"""") shouldBe true
+    buildsObpPath("""val u = "/obp/" + path""") shouldBe true
+  }
+
+  it should "leave other lines alone" in {
+    buildsObpPath("""val callback = "http://localhost:5174/login/obp/callback"""") shouldBe false
+    buildsObpPath("""val issuer = s"$baseUrl/obp-oidc"""") shouldBe false
+    buildsObpPath("""action = "/obp-oidc/auth"""") shouldBe false
+    buildsObpPath("""val x = obp + "/banks"""") shouldBe false
+    buildsObpPath("""val v = "jackson 2.15.0"""") shouldBe false
+    buildsObpPath("""val x = 5""") shouldBe false
+  }
+
   "The field check" should "report a renamed or removed field" in {
     // With `consumer_secret` gone from the documented fields, the read is reported, and a read with an
     // alternative (`client_id|consumer_key`) passes on either field.
@@ -210,6 +229,22 @@ object ObpApiContractTest {
       (line, index) <- read(file).linesIterator.zipWithIndex.toList
       code = line.trim
       if !(code.startsWith("//") || code.startsWith("*") || code.startsWith("/*"))
-      if code.contains("\"") && (code.contains("/obp/v") || code.contains("/obp/$"))
+      if buildsObpPath(code)
     } yield (rel, index + 1, line)
+
+  /** A literal that is the `obp` segment of a path: `"obp"`, `"/obp/"`, `s"$base/obp"`. */
+  private val ObpSegment = """"(?:[^"]*/)?obp/?"""".r
+
+  /** A literal that is only a version: `"v6.0.0"`, `"/v6.0.0/"`. */
+  private val VersionSegment = """"/?v\d+\.\d+\.\d+/?"""".r
+
+  /** Whether a line of code builds an OBP-API path: it names `/obp/vX...` or `/obp/$...` in a literal, or
+    * holds the pieces of one, a literal that is the `obp` segment or a version segment, as in
+    * `"/obp/" + "v6.0.0"` or `Root / "obp" / "v6.0.0"`.
+    */
+  def buildsObpPath(code: String): Boolean =
+    code.contains("\"") && (
+      code.contains("/obp/v") || code.contains("/obp/$") ||
+        ObpSegment.findFirstIn(code).isDefined || VersionSegment.findFirstIn(code).isDefined
+    )
 }
