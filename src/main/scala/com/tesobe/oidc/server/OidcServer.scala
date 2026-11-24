@@ -384,6 +384,10 @@ object OidcServer extends IOApp {
                     case None           => NotFound("CSS file not found")
                   }
 
+                // Liveness probe in OBP-API's shape: answers true and checks nothing - always available
+                case req @ GET -> Root / "alive" =>
+                  AliveEndpoint.routes.run(req).getOrElseF(NotFound("OBP-OIDC: no route matches this request"))
+
                 // Machine-friendly liveness probe - always available
                 case GET -> Root / "health" =>
                   Ok("""{"status":"ok"}""")
